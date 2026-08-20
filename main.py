@@ -61,6 +61,8 @@ async def main():
         )
 
     logs.stage_ok("BOOT")
+    # بارگذاری file_idهای کش‌شده‌ی کاور (تا از آپلود مجدد جلوگیری شود)
+    player._load_cover_fids()
     logs.info("🎵 ربات آماده است.")
 
     await idle()

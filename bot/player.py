@@ -37,6 +37,31 @@ _updater: Dict[int, asyncio.Task] = {}
 _volume: Dict[int, int] = {}
 _muted: Dict[int, bool] = {}
 
+# کش file_id کاور (تا فایل فقط یک‌بار آپلود شود و گوشی‌ها دوباره دانلود نکنند)
+# کلید: "anim" یا "static" — مقدار: file_id تلگرام
+_cover_fid: Dict[str, str] = {}
+
+
+def _load_cover_fids() -> None:
+    """بارگذاری file_idهای ذخیره‌شده از دیتابیس (پس از ری‌استارت هم می‌مانند)."""
+    for key in ("anim", "static"):
+        v = db.get_setting(f"cover_fid_{key}")
+        if v:
+            _cover_fid[key] = v
+
+
+def _save_cover_fid(key: str, fid: str) -> None:
+    _cover_fid[key] = fid
+    try:
+        db.set_setting(f"cover_fid_{key}", fid)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cover_ref(key: str, path: str) -> str:
+    """اگر file_id کش‌شده داریم آن را برگردان، وگرنه مسیر فایل (آپلود اول)."""
+    return _cover_fid.get(key) or path
+
 
 def get_volume(chat_id: int) -> int:
     return _volume.get(chat_id, 100)
@@ -187,16 +212,20 @@ async def _send_panel(chat_id: int, new: bool = False) -> None:
     static = cover_static_file()
     try:
         if track.paused and static:
-            # اگر در حالت مکث پنل می‌سازیم، کاور ثابت را نشان بده
-            msg = await app.send_photo(chat_id, static, caption=text, reply_markup=kb)
+            msg = await app.send_photo(chat_id, _cover_ref("static", static), caption=text, reply_markup=kb)
             _panel_media[chat_id] = "static"
+            if msg.photo and "static" not in _cover_fid:
+                _save_cover_fid("static", msg.photo.file_id)
         elif cover and cover_is_animation():
-            # گیف/ویدیو → send_animation
-            msg = await app.send_animation(chat_id, cover, caption=text, reply_markup=kb)
+            msg = await app.send_animation(chat_id, _cover_ref("anim", cover), caption=text, reply_markup=kb)
             _panel_media[chat_id] = "anim"
+            if msg.animation and "anim" not in _cover_fid:
+                _save_cover_fid("anim", msg.animation.file_id)
         elif cover:
-            msg = await app.send_photo(chat_id, cover, caption=text, reply_markup=kb)
+            msg = await app.send_photo(chat_id, _cover_ref("photo", cover), caption=text, reply_markup=kb)
             _panel_media[chat_id] = "photo"
+            if msg.photo and "photo" not in _cover_fid:
+                _save_cover_fid("photo", msg.photo.file_id)
         else:
             msg = await app.send_message(chat_id, text, reply_markup=kb)
             _panel_media[chat_id] = "text"
@@ -242,11 +271,11 @@ async def refresh_panel(chat_id: int) -> None:
 
     try:
         if desired in ("static", "anim") and desired != current:
-            # تعویض خودِ رسانه (فیلم اکولایزر ↔ عکس ثابت)
+            # تعویض خودِ رسانه (فیلم اکولایزر ↔ عکس ثابت) — با file_id کش‌شده
             if desired == "static":
-                media = InputMediaPhoto(static, caption=text)
+                media = InputMediaPhoto(_cover_ref("static", static), caption=text)
             else:
-                media = InputMediaAnimation(anim, caption=text)
+                media = InputMediaAnimation(_cover_ref("anim", anim), caption=text)
             await app.edit_message_media(chat_id, mid, media=media, reply_markup=kb)
             _panel_media[chat_id] = desired
         elif desired in ("anim", "static", "photo"):
