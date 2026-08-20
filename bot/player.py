@@ -1,13 +1,16 @@
 """منطق اصلی پخش: پیوستن به کال، مدیریت پنل و بروزرسانی خودکار نوار پیشرفت."""
 import asyncio
 import logging
+import os
 from typing import Dict, Optional
 
 from pyrogram.errors import MessageNotModified
 from pytgcalls.types import AudioQuality, MediaStream, VideoQuality
 
 from bot import app, call
+from bot import logs
 from bot import queue as q
+from bot import youtube
 from bot.panel import COVER_PATH, has_cover, panel_keyboard, panel_text
 from bot.queue import Track
 
@@ -15,6 +18,9 @@ LOGGER = logging.getLogger("musicbot.player")
 
 # فاصله‌ی بروزرسانی خودکار نوار پیشرفت (ثانیه) — طبق درخواست کاربر ۶ ثانیه
 PROGRESS_INTERVAL = 6
+
+# پوشه‌ی فایل‌های دانلودشده (روی Volume تا با ری‌استارت پاک نشود)
+DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "/data/downloads").strip() or "/data/downloads"
 
 _panel_msg: Dict[int, int] = {}
 _updater: Dict[int, asyncio.Task] = {}
@@ -39,20 +45,43 @@ def set_muted(chat_id: int, val: bool) -> None:
 
 
 def _stream(track: Track) -> MediaStream:
+    # همیشه از فایل محلی پخش کن (لینک استریم یوتیوب به IP پروکسی قفل است
+    # و ffmpeg از IP سرور نمی‌تواند آن را بگیرد → سکوت در کال).
+    src = track.local_path or track.stream_url
     if track.is_video:
         return MediaStream(
-            track.stream_url,
+            src,
             audio_parameters=AudioQuality.HIGH,
             video_parameters=VideoQuality.HD_720p,
         )
     return MediaStream(
-        track.stream_url,
+        src,
         audio_parameters=AudioQuality.HIGH,
         video_flags=MediaStream.Flags.IGNORE,  # فقط صدا
     )
 
 
+async def _ensure_local_file(track: Track) -> bool:
+    """اگر فایل محلی نداریم، دانلودش کن (از طریق پروکسی). True اگر آماده شد."""
+    if track.local_path and os.path.isfile(track.local_path):
+        return True
+    query = track.query or track.webpage_url or track.title
+    try:
+        with logs.stage("DOWNLOAD", title=track.title, video=track.is_video):
+            info = await youtube.download_media(query, video=track.is_video, out_dir=DOWNLOAD_DIR)
+        path = info.get("path", "")
+        if path and os.path.isfile(path):
+            track.local_path = path
+            return True
+        logs.warn("DOWNLOAD: فایل ساخته نشد | %s", track.title)
+        return False
+    except Exception as e:  # noqa: BLE001
+        logs.warn("DOWNLOAD error | %s: %s", track.title, e)
+        return False
+
+
 async def start_playback(chat_id: int, track: Track) -> None:
+    await _ensure_local_file(track)
     q.set_now_playing(chat_id, track)
     await call.play(chat_id, _stream(track))
     await _send_panel(chat_id, new=True)
@@ -70,6 +99,7 @@ async def skip(chat_id: int) -> Optional[Track]:
     if nxt is None:
         await stop(chat_id)
         return None
+    await _ensure_local_file(nxt)
     await call.play(chat_id, _stream(nxt))
     await _send_panel(chat_id, new=True)
     return nxt
@@ -79,6 +109,7 @@ async def previous(chat_id: int) -> Optional[Track]:
     prev = q.pop_previous(chat_id)
     if prev is None:
         return None
+    await _ensure_local_file(prev)
     await call.play(chat_id, _stream(prev))
     await _send_panel(chat_id, new=True)
     return prev

@@ -161,7 +161,11 @@ def _try_clients(search: str, fmt: str, clients: list, proxy: Optional[str],
     هر تلاش زیر یک مهلت سخت (hard timeout) قرار دارد تا پروکسی/شبکه‌ی کند
     هرگز کل سیستم را قفل نکند.
     """
-    hard = float(os.environ.get("ATTEMPT_HARD_TIMEOUT", "20" if proxy else "60"))
+    # مهلت سخت: دانلود فایل کامل زمان بیشتری می‌خواهد از استخراج لینک
+    if download:
+        hard = float(os.environ.get("DL_HARD_TIMEOUT", "90"))
+    else:
+        hard = float(os.environ.get("ATTEMPT_HARD_TIMEOUT", "20" if proxy else "60"))
     last_err = None
     for client in clients:
         label = ",".join(client) if client else "auto"
@@ -268,15 +272,28 @@ def _extract(query: str, video: bool) -> dict:
     return _pack(_extract_with_fallback(query, video, download=False))
 
 
-def _download(query: str, out_dir: str) -> dict:
-    info = _extract_with_fallback(query, video=False, download=True, out_dir=out_dir)
-    path = os.path.join(out_dir, f"{info['id']}.mp3")
+def _download(query: str, out_dir: str, video: bool = False) -> dict:
+    info = _extract_with_fallback(query, video=video, download=True, out_dir=out_dir)
+    vid = info["id"]
+    # مسیر خروجی: صوت پس از تبدیل mp3، ویدیو پس از merge mp4
+    ext = "mp4" if video else "mp3"
+    path = os.path.join(out_dir, f"{vid}.{ext}")
+    # اگر با پسوند انتظار پیدا نشد، هر فایلی با همان id را پیدا کن
+    if not os.path.isfile(path):
+        import glob
+        matches = glob.glob(os.path.join(out_dir, f"{vid}.*"))
+        matches = [m for m in matches if not m.endswith((".part", ".ytdl"))]
+        if matches:
+            path = matches[0]
     return {
+        "id": vid,
         "path": path,
         "title": info.get("title", "audio"),
         "duration": info.get("duration"),
+        "duration_text": _format_duration(info.get("duration")),
         "thumbnail": info.get("thumbnail"),
         "uploader": info.get("uploader", ""),
+        "webpage_url": info.get("webpage_url", ""),
     }
 
 
@@ -288,4 +305,15 @@ async def get_media(query: str, video: bool = False) -> dict:
 async def download_audio(query: str, out_dir: str = "downloads") -> dict:
     os.makedirs(out_dir, exist_ok=True)
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _download, query, out_dir)
+    return await loop.run_in_executor(None, _download, query, out_dir, False)
+
+
+async def download_media(query: str, video: bool = False, out_dir: str = "downloads") -> dict:
+    """دانلود کامل آهنگ/ویدیو به فایل محلی (برای پخش پایدار در کال).
+
+    چون لینک استریم یوتیوب به IP پروکسی قفل می‌شود، فایل را با پروکسی دانلود
+    می‌کنیم تا ffmpeg بتواند از فایل محلی پخش کند.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _download, query, out_dir, video)

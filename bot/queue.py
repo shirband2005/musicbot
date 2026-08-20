@@ -16,6 +16,7 @@ class Track:
     requester: str  # نام درخواست‌کننده
     is_video: bool = False
     query: str = ""  # عبارت جست‌وجوی اصلی (برای دریافت رسانه/بازپخش)
+    local_path: str = ""  # مسیر فایل دانلودشده‌ی محلی (برای پخش پایدار در کال)
     # زمان‌بندی برای نوار پیشرفت
     started_at: float = 0.0
     elapsed_before_pause: float = 0.0
