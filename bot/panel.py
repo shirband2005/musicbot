@@ -1,9 +1,15 @@
 """ساخت پنل پخش (کاور + متن + دکمه‌ها) مطابق طرح نهایی کاربر."""
 import os
 
+from pyrogram import enums
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.queue import Track, progress_bar
+
+# میانبرهای رنگ دکمه (kurigram: enums.ButtonStyle)
+GREEN = enums.ButtonStyle.SUCCESS
+RED = enums.ButtonStyle.DANGER
+BLUE = enums.ButtonStyle.PRIMARY
 
 # کاور ثابت پنل. می‌تواند عکس (jpg/png) یا گیف/ویدیو (gif/mp4) باشد.
 # روی Volume ذخیره می‌شود تا با دیپلوی جدید پاک نشود.
@@ -87,29 +93,36 @@ def panel_keyboard(
     # ردیف اول: نوار وضعیت (خودِ نوار پیشرفت به‌عنوان متنِ دکمه)
     bar = progress_bar(track.position(), track.duration)
 
-    # دکمه پخش/مکث بسته به وضعیت
-    play_btn = "▶️ پخش" if track.paused else "⏸ توقف موقت"
-    mute_btn = "🔈 صدادار" if muted else "🔇 بیصدا"
+    # دکمه پخش/مکث بسته به وضعیت (پخش=سبز، توقف‌موقت=آبی)
+    if track.paused:
+        play_btn, play_style = "▶️ پخش", GREEN
+    else:
+        play_btn, play_style = "⏸ توقف موقت", BLUE
+    # دکمه صدا (بیصدا=قرمز، صدادار=سبز)
+    if muted:
+        mute_btn, mute_style = "🔈 صدادار", GREEN
+    else:
+        mute_btn, mute_style = "🔇 بیصدا", RED
 
     rows = [
-        [InlineKeyboardButton(bar, callback_data=cb("refresh"))],
+        [InlineKeyboardButton(bar, callback_data=cb("refresh"), style=GREEN)],
         [
-            InlineKeyboardButton(play_btn, callback_data=cb("playpause")),
-            InlineKeyboardButton("⏹ توقف", callback_data=cb("stop")),
+            InlineKeyboardButton(play_btn, callback_data=cb("playpause"), style=play_style),
+            InlineKeyboardButton("⏹ توقف", callback_data=cb("stop"), style=RED),
         ],
         [
-            InlineKeyboardButton("🔉 کاهش صدا", callback_data=cb("vol_down")),
-            InlineKeyboardButton(f"{volume}%", callback_data=cb("noop")),
-            InlineKeyboardButton("🔊 افزایش صدا", callback_data=cb("vol_up")),
+            InlineKeyboardButton("🔉 کاهش صدا", callback_data=cb("vol_down"), style=RED),
+            InlineKeyboardButton(f"{volume}%", callback_data=cb("noop"), style=BLUE),
+            InlineKeyboardButton("🔊 افزایش صدا", callback_data=cb("vol_up"), style=GREEN),
         ],
-        [InlineKeyboardButton(mute_btn, callback_data=cb("mute"))],
+        [InlineKeyboardButton(mute_btn, callback_data=cb("mute"), style=mute_style)],
         [
-            InlineKeyboardButton("⏮ آهنگ قبلی", callback_data=cb("prev")),
-            InlineKeyboardButton("📃 پلی‌لیست", callback_data=cb("playlist")),
-            InlineKeyboardButton("⏭ آهنگ بعدی", callback_data=cb("skip")),
+            InlineKeyboardButton("⏮ آهنگ قبلی", callback_data=cb("prev"), style=RED),
+            InlineKeyboardButton("📃 پلی‌لیست", callback_data=cb("playlist"), style=BLUE),
+            InlineKeyboardButton("⏭ آهنگ بعدی", callback_data=cb("skip"), style=GREEN),
         ],
-        [InlineKeyboardButton("📥 دریافت رسانه", callback_data=cb("getmedia"))],
-        [InlineKeyboardButton("⛔️ بستن پنل", callback_data=cb("close"))],
+        [InlineKeyboardButton("📥 دریافت رسانه", callback_data=cb("getmedia"), style=BLUE)],
+        [InlineKeyboardButton("⛔️ بستن پنل", callback_data=cb("close"), style=RED)],
     ]
     return InlineKeyboardMarkup(rows)
 

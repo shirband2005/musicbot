@@ -1,5 +1,5 @@
 """دستورات /start و راهنما (راهنما پلیر) با پنل چندسطحی."""
-from pyrogram import Client, filters
+from pyrogram import Client, enums, filters
 from pyrogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -8,6 +8,11 @@ from pyrogram.types import (
 
 from bot import database as db
 from bot.facmd import fa_command
+
+# رنگ دکمه‌های راهنما
+_BLUE = enums.ButtonStyle.PRIMARY
+_RED = enums.ButtonStyle.DANGER
+_GREEN = enums.ButtonStyle.SUCCESS
 
 # دکمه پشتیبانی به پروفایل مالک (با آیدی عددی) وصل می‌شود
 SUPPORT_USERNAME = "tg://user?id=8406519786"
@@ -23,8 +28,8 @@ START_TEXT = (
 def _start_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("📖 راهنما", callback_data="h|main")],
-            [InlineKeyboardButton("➕ افزودن به گروه", url="https://t.me/?startgroup=true")],
+            [InlineKeyboardButton("📖 راهنما", callback_data="h|main", style=_GREEN)],
+            [InlineKeyboardButton("➕ افزودن به گروه", url="https://t.me/?startgroup=true", style=_BLUE)],
         ]
     )
 
@@ -108,9 +113,16 @@ def help_markup(node: str) -> InlineKeyboardMarkup:
         btn_row = []
         for label, data in row:
             if data.startswith("url|"):
-                btn_row.append(InlineKeyboardButton(label, url=data[4:]))
+                btn_row.append(InlineKeyboardButton(label, url=data[4:], style=_BLUE))
+            elif data == "h|close":
+                # دکمه‌های بستن پنل/راهنما → قرمز
+                btn_row.append(InlineKeyboardButton(label, callback_data=data, style=_RED))
+            elif label.startswith("🔙") or data in ("h|main", "h|control"):
+                # دکمه‌های بازگشت → آبی
+                btn_row.append(InlineKeyboardButton(label, callback_data=data, style=_BLUE))
             else:
-                btn_row.append(InlineKeyboardButton(label, callback_data=data))
+                # سایر دکمه‌های ناوبری راهنما → آبی
+                btn_row.append(InlineKeyboardButton(label, callback_data=data, style=_BLUE))
         rows.append(btn_row)
     return InlineKeyboardMarkup(rows)
 
