@@ -16,6 +16,7 @@ from pyrogram.types import Message
 
 import config
 from bot import database as db
+from bot import logs
 from bot import player
 from bot import queue as q
 from bot import youtube
@@ -54,7 +55,8 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
         info = await youtube.get_media(query, video=is_video)
     except Exception as e:  # noqa: BLE001
         LOGGER.warning("youtube error: %s", e)
-        await status.edit_text(f"❌ خطا در پیدا کردن محتوا:\n`{e}`")
+        friendly = logs.classify_youtube_error(str(e))
+        await status.edit_text(f"❌ {friendly}\n\n`{str(e)[:300]}`")
         return
 
     if not info.get("stream_url"):
@@ -80,7 +82,8 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
     )
 
     try:
-        pos = await player.play_or_queue(message.chat.id, track)
+        with logs.stage("CALL_PLAY", message.chat.id, title=track.title, video=is_video):
+            pos = await player.play_or_queue(message.chat.id, track)
     except Exception as e:  # noqa: BLE001
         LOGGER.error("playback error: %s", e)
         err = str(e)
