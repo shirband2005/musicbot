@@ -11,22 +11,36 @@ COVER_PATH = os.environ.get("COVER_PATH", "/data/cover").strip() or "/data/cover
 
 # پسوندهای شناخته‌شده برای پیدا کردن فایل کاور (چون ممکن است بدون پسوند ذخیره شود)
 _COVER_EXTS = [".gif", ".mp4", ".jpg", ".jpeg", ".png", ".webp", ""]
+_STATIC_EXTS = [".jpg", ".jpeg", ".png", ".webp", ""]
 
 _ANIM_EXTS = (".gif", ".mp4")
 
 
 def cover_file() -> str:
-    """مسیر فایل کاور موجود را برمی‌گرداند (با هر پسوند)، یا رشته خالی.
+    """مسیر کاور متحرک (گیف/ویدیو) موجود را برمی‌گرداند، یا رشته خالی.
 
     اول COVER_PATH (روی Volume) بعد فایل تعبیه‌شده در assets/ بررسی می‌شود.
     """
     candidates = [COVER_PATH]
-    # مسیر تعبیه‌شده در ریپو به‌عنوان fallback
     candidates.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "cover"))
     for base in candidates:
         if os.path.isfile(base):
             return base
         for ext in _COVER_EXTS:
+            p = base + ext
+            if p and os.path.isfile(p):
+                return p
+    return ""
+
+
+def cover_static_file() -> str:
+    """مسیر کاور ثابت (عکس اکولایزر بی‌حرکت) برای حالت مکث/توقف موقت."""
+    candidates = [COVER_PATH + "_static"]
+    candidates.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "cover_static"))
+    for base in candidates:
+        if os.path.isfile(base):
+            return base
+        for ext in _STATIC_EXTS:
             p = base + ext
             if p and os.path.isfile(p):
                 return p

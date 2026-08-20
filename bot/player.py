@@ -5,6 +5,7 @@ import os
 from typing import Dict, Optional
 
 from pyrogram.errors import MessageNotModified
+from pyrogram.types import InputMediaAnimation, InputMediaPhoto
 from pytgcalls.types import AudioQuality, MediaStream, VideoQuality
 
 from bot import app, call
@@ -12,7 +13,14 @@ from bot import database as db
 from bot import logs
 from bot import queue as q
 from bot import youtube
-from bot.panel import cover_file, cover_is_animation, has_cover, panel_keyboard, panel_text
+from bot.panel import (
+    cover_file,
+    cover_is_animation,
+    cover_static_file,
+    has_cover,
+    panel_keyboard,
+    panel_text,
+)
 from bot.queue import Track
 
 LOGGER = logging.getLogger("musicbot.player")
@@ -24,6 +32,7 @@ PROGRESS_INTERVAL = 6
 DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "/data/downloads").strip() or "/data/downloads"
 
 _panel_msg: Dict[int, int] = {}
+_panel_media: Dict[int, str] = {}  # نوع رسانه فعلی پنل: anim/static/photo/text
 _updater: Dict[int, asyncio.Task] = {}
 _volume: Dict[int, int] = {}
 _muted: Dict[int, bool] = {}
@@ -175,20 +184,29 @@ async def _send_panel(chat_id: int, new: bool = False) -> None:
     text = panel_text(track, vol, muted)
     kb = panel_keyboard(chat_id, track, vol, muted)
     cover = cover_file()
+    static = cover_static_file()
     try:
-        if cover and cover_is_animation():
+        if track.paused and static:
+            # اگر در حالت مکث پنل می‌سازیم، کاور ثابت را نشان بده
+            msg = await app.send_photo(chat_id, static, caption=text, reply_markup=kb)
+            _panel_media[chat_id] = "static"
+        elif cover and cover_is_animation():
             # گیف/ویدیو → send_animation
             msg = await app.send_animation(chat_id, cover, caption=text, reply_markup=kb)
+            _panel_media[chat_id] = "anim"
         elif cover:
             msg = await app.send_photo(chat_id, cover, caption=text, reply_markup=kb)
+            _panel_media[chat_id] = "photo"
         else:
             msg = await app.send_message(chat_id, text, reply_markup=kb)
+            _panel_media[chat_id] = "text"
         _panel_msg[chat_id] = msg.id
     except Exception as e:  # noqa: BLE001
         LOGGER.warning("ارسال پنل ناموفق، بازگشت به متن: %s", e)
         try:
             msg = await app.send_message(chat_id, text, reply_markup=kb)
             _panel_msg[chat_id] = msg.id
+            _panel_media[chat_id] = "text"
         except Exception as e2:  # noqa: BLE001
             LOGGER.error("ارسال پنل کاملاً ناموفق: %s", e2)
             return
@@ -198,6 +216,7 @@ async def _send_panel(chat_id: int, new: bool = False) -> None:
 
 async def _delete_panel(chat_id: int) -> None:
     mid = _panel_msg.pop(chat_id, None)
+    _panel_media.pop(chat_id, None)
     if mid:
         try:
             await app.delete_messages(chat_id, mid)
@@ -213,8 +232,25 @@ async def refresh_panel(chat_id: int) -> None:
     vol, muted = get_volume(chat_id), is_muted(chat_id)
     text = panel_text(track, vol, muted)
     kb = panel_keyboard(chat_id, track, vol, muted)
+
+    # آیا باید نوع کاور عوض شود؟ (پخش=متحرک، مکث=ثابت)
+    anim = cover_file()
+    static = cover_static_file()
+    want_static = track.paused and bool(static)
+    desired = "static" if want_static else ("anim" if (anim and cover_is_animation()) else "photo" if anim else "text")
+    current = _panel_media.get(chat_id)
+
     try:
-        if has_cover():
+        if desired in ("static", "anim") and desired != current:
+            # تعویض خودِ رسانه (فیلم اکولایزر ↔ عکس ثابت)
+            if desired == "static":
+                media = InputMediaPhoto(static, caption=text)
+            else:
+                media = InputMediaAnimation(anim, caption=text)
+            await app.edit_message_media(chat_id, mid, media=media, reply_markup=kb)
+            _panel_media[chat_id] = desired
+        elif desired in ("anim", "static", "photo"):
+            # فقط متن/کیبورد بروزرسانی شود (رسانه ثابت)
             await app.edit_message_caption(chat_id, mid, caption=text, reply_markup=kb)
         else:
             await app.edit_message_text(chat_id, mid, text, reply_markup=kb)
