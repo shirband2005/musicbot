@@ -47,10 +47,10 @@ def _pot_available() -> bool:
 
 
 # کلاینت‌هایی که بدون پروکسی امتحان می‌شوند.
-# با PO Token، mweb و web_safari توصیه رسمی‌اند؛ بقیه به‌عنوان fallback.
-_CLIENTS_DIRECT = [["mweb"], ["web_safari"], ["tv"], ["ios"], ["android"]]
+# با کوکی + PO Token + JS runtime، کلاینت پیش‌فرض (None=web/tv) بهترین نتیجه را می‌دهد.
+_CLIENTS_DIRECT = [None, ["web_safari"], ["mweb"], ["tv"], ["ios"]]
 # با پروکسی، کلاینت سبک‌تر (تلاش کمتر برای سرعت)
-_CLIENTS_PROXY = [["mweb"], ["web_safari"], ["ios"]]
+_CLIENTS_PROXY = [None, ["web_safari"], ["ios"]]
 
 # نشانه‌های خطای بلاک IP که باید روی پروکسی سوییچ کنیم
 _BLOCK_SIGNS = (
@@ -104,6 +104,13 @@ def _run(search: str, fmt: str, client: Optional[list], proxy: Optional[str],
          download: bool, out_dir: str) -> dict:
     opts = {**_YDL_COMMON, **_cookie_opts(), "format": fmt}
 
+    # فعال‌کردن node به‌عنوان JS runtime برای حل چالش رمز/n یوتیوب.
+    # بدون این، yt-dlp می‌گوید "The page needs to be reloaded" یا فرمت‌ها ناقص‌اند.
+    # قالب صحیح: dict از {نام‌رانتایم: {تنظیمات}}
+    js_rt = os.environ.get("JS_RUNTIME", "node").strip()
+    if js_rt:
+        opts["js_runtimes"] = {js_rt: {}}
+
     extractor_args = {}
     if client:
         extractor_args["youtube"] = {"player_client": client}
@@ -154,10 +161,10 @@ def _try_clients(search: str, fmt: str, clients: list, proxy: Optional[str],
     هر تلاش زیر یک مهلت سخت (hard timeout) قرار دارد تا پروکسی/شبکه‌ی کند
     هرگز کل سیستم را قفل نکند.
     """
-    hard = float(os.environ.get("ATTEMPT_HARD_TIMEOUT", "15" if proxy else "30"))
+    hard = float(os.environ.get("ATTEMPT_HARD_TIMEOUT", "20" if proxy else "60"))
     last_err = None
     for client in clients:
-        label = ",".join(client)
+        label = ",".join(client) if client else "auto"
         pxy = proxy.split("@")[-1] if proxy else "direct"
         t0 = time.monotonic()
         logs.stage_start("YT_TRY", client=label, proxy=pxy)

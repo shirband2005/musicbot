@@ -28,6 +28,9 @@ async def _on_stream_end(_, update):
 
 async def main():
     logs.stage_start("BOOT")
+    # نوشتن فایل کوکی از COOKIES_B64 (اگر تنظیم شده باشد) پیش از هر چیز
+    if config.materialize_cookies():
+        logs.info("YouTube: فایل کوکی آماده شد ✅ (%s)", config.COOKIES_FILE)
     try:
         with logs.stage("START_BOT"):
             await app.start()
