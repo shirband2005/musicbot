@@ -1,0 +1,17 @@
+# محیط مجازی و کش
+.venv/
+__pycache__/
+*.pyc
+
+# دیتابیس محلی
+*.db
+*.session
+*.session-journal
+
+# اطلاعات محرمانه
+.env
+cookies.txt
+
+# فایل‌های موقت دانلود
+downloads/
+*.log
