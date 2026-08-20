@@ -7,6 +7,7 @@ from pyrogram.types import CallbackQuery
 
 from bot import call
 from bot import player
+from bot import platform_pref
 from bot import queue as q
 from bot import youtube
 from bot.plugins.start import HELP_NODES, help_markup, help_text
@@ -138,6 +139,12 @@ async def panel_cb(client: Client, cq: CallbackQuery):
         else:
             lines.append("\nصف بعدی خالی است.")
         await cq.answer("\n".join(lines)[:200], show_alert=True)
+
+    # --- تغییر پلتفرم جست‌وجو (چرخش بین سه حالت) ---
+    elif action == "platform":
+        new_mode = platform_pref.cycle(chat_id)
+        await player.refresh_panel(chat_id)
+        await cq.answer(f"🎛 {platform_pref.label(chat_id)}")
 
     # --- دریافت رسانه: دانلود فایل mp3 و ارسال آن ---
     elif action == "getmedia":

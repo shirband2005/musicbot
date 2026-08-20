@@ -17,6 +17,7 @@ from pyrogram.types import Message
 import config
 from bot import database as db
 from bot import logs
+from bot import platform_pref
 from bot import player
 from bot import queue as q
 from bot import soundcloud
@@ -53,8 +54,10 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
     status = await message.reply_text("🔎 در حال جست‌وجو...")
 
     info = None
-    # ۱) برای آهنگ (نه ویدیو): اول ساوندکلاد (مستقیم، بدون پروکسی، سریع)
-    if not is_video:
+    mode = platform_pref.get(message.chat.id)  # both | youtube | soundcloud
+
+    # ۱) ساوندکلاد (اگر حالت both یا soundcloud و آهنگ است نه ویدیو)
+    if not is_video and mode in (platform_pref.BOTH, platform_pref.SOUNDCLOUD):
         try:
             sc = await soundcloud.search(query)
             if sc and sc.get("stream_url"):
@@ -62,7 +65,12 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
         except Exception as e:  # noqa: BLE001
             LOGGER.debug("soundcloud search: %s", e)
 
-    # ۲) اگر ساوندکلاد نداشت → یوتیوب (با پروکسی/کوکی/دانلود)
+    # اگر فقط ساوندکلاد خواسته شده و پیدا نشد → خطا (نرو یوتیوب)
+    if info is None and mode == platform_pref.SOUNDCLOUD and not is_video:
+        await status.edit_text("❌ در ساوند کلاد پیدا نشد.\n(می‌توانی پلتفرم را از پنل به یوتیوب تغییر دهی.)")
+        return
+
+    # ۲) یوتیوب (حالت both در صورت نبود ساوندکلاد، یا حالت youtube، یا ویدیو)
     if info is None:
         try:
             info = await youtube.get_media(query, video=is_video)

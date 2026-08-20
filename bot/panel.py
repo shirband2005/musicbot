@@ -5,6 +5,7 @@ from pyrogram import enums
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.queue import Track, progress_bar
+from bot import platform_pref
 
 # میانبرهای رنگ دکمه (kurigram: enums.ButtonStyle)
 GREEN = enums.ButtonStyle.SUCCESS
@@ -122,6 +123,7 @@ def panel_keyboard(
             InlineKeyboardButton("⏭ آهنگ بعدی", callback_data=cb("skip"), style=GREEN),
         ],
         [InlineKeyboardButton("📥 دریافت رسانه", callback_data=cb("getmedia"), style=BLUE)],
+        [InlineKeyboardButton(f"🎛 {platform_pref.label(chat_id)}", callback_data=cb("platform"), style=BLUE)],
         [InlineKeyboardButton("⛔️ بستن پنل", callback_data=cb("close"), style=RED)],
     ]
     return InlineKeyboardMarkup(rows)
