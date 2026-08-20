@@ -20,7 +20,7 @@ _YDL = {
     "retries": 1,
 }
 
-_AUDIO_FMT = "bestaudio/best"
+_AUDIO_FMT = "http_mp3_0_1/http_mp3/bestaudio[protocol=http]/bestaudio/best"
 
 
 def _format_duration(seconds: Optional[int]) -> str:
