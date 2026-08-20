@@ -18,6 +18,7 @@ class Track:
     query: str = ""  # عبارت جست‌وجوی اصلی (برای دریافت رسانه/بازپخش)
     video_id: str = ""  # شناسه ویدیوی یوتیوب (کلید کش)
     local_path: str = ""  # مسیر فایل دانلودشده‌ی محلی (برای پخش پایدار در کال)
+    source: str = "youtube"  # منبع: youtube | soundcloud
     # زمان‌بندی برای نوار پیشرفت
     started_at: float = 0.0
     elapsed_before_pause: float = 0.0

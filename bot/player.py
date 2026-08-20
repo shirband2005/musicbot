@@ -12,6 +12,7 @@ from bot import app, call
 from bot import database as db
 from bot import logs
 from bot import queue as q
+from bot import soundcloud
 from bot import youtube
 from bot.panel import (
     cover_file,
@@ -97,11 +98,26 @@ def _stream(track: Track) -> MediaStream:
 
 
 async def _ensure_local_file(track: Track) -> bool:
-    """اگر فایل محلی نداریم، اول کش دیتابیس را چک کن، بعد دانلود کن.
+    """آماده‌سازی منبع پخش.
 
-    - اگر همین آهنگ قبلاً دانلود شده و فایلش هست → بدون دانلود دوباره پخش.
-    - پس از دانلود جدید، در کش ثبت و فقط ۱۰ فایل اخیر نگه داشته می‌شود.
+    - ساوندکلاد: مستقیم استریم می‌شود. اگر لینک منقضی شده باشد (پخش از تاریخچه)
+      دوباره جست‌وجو می‌شود تا لینک تازه بگیریم.
+    - یوتیوب: اگر فایل محلی/کش داریم فوری، وگرنه از طریق پروکسی دانلود می‌شود.
     """
+    # ساوندکلاد مستقیم استریم می‌شود (IP دیتاسنتر بلاک نیست)
+    if track.source == "soundcloud":
+        # لینک استریم ساوندکلاد امضاشده و منقضی‌شدنی است؛ برای پخش از تاریخچه
+        # دوباره یک لینک تازه بگیر.
+        if track.query:
+            try:
+                fresh = await soundcloud.search(track.query)
+                if fresh and fresh.get("stream_url"):
+                    track.stream_url = fresh["stream_url"]
+            except Exception as e:  # noqa: BLE001
+                logs.debug("sc refresh: %s", e) if hasattr(logs, "debug") else None
+        return bool(track.stream_url)
+
+    # یوتیوب: اگر فایل قبلاً دانلود شده (تاریخچه) فوری پخش کن
     if track.local_path and os.path.isfile(track.local_path):
         return True
 

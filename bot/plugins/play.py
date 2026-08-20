@@ -19,6 +19,7 @@ from bot import database as db
 from bot import logs
 from bot import player
 from bot import queue as q
+from bot import soundcloud
 from bot import youtube
 from bot.facmd import fa_command
 from bot.queue import Track
@@ -51,13 +52,25 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
     db.add_chat(message.chat.id)
     status = await message.reply_text("🔎 در حال جست‌وجو...")
 
-    try:
-        info = await youtube.get_media(query, video=is_video)
-    except Exception as e:  # noqa: BLE001
-        LOGGER.warning("youtube error: %s", e)
-        friendly = logs.classify_youtube_error(str(e))
-        await status.edit_text(f"❌ {friendly}\n\n`{str(e)[:300]}`")
-        return
+    info = None
+    # ۱) برای آهنگ (نه ویدیو): اول ساوندکلاد (مستقیم، بدون پروکسی، سریع)
+    if not is_video:
+        try:
+            sc = await soundcloud.search(query)
+            if sc and sc.get("stream_url"):
+                info = sc
+        except Exception as e:  # noqa: BLE001
+            LOGGER.debug("soundcloud search: %s", e)
+
+    # ۲) اگر ساوندکلاد نداشت → یوتیوب (با پروکسی/کوکی/دانلود)
+    if info is None:
+        try:
+            info = await youtube.get_media(query, video=is_video)
+        except Exception as e:  # noqa: BLE001
+            LOGGER.warning("youtube error: %s", e)
+            friendly = logs.classify_youtube_error(str(e))
+            await status.edit_text(f"❌ {friendly}\n\n`{str(e)[:300]}`")
+            return
 
     if not info.get("stream_url"):
         await status.edit_text("❌ لینک قابل پخشی پیدا نشد.")
@@ -69,6 +82,7 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
         )
         return
 
+    source = info.get("source", "youtube")
     track = Track(
         title=info["title"],
         stream_url=info["stream_url"],
@@ -80,6 +94,7 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
         is_video=is_video,
         query=query,
         video_id=info.get("id") or "",
+        source=source,
     )
 
     try:
