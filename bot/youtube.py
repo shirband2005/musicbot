@@ -9,8 +9,12 @@
 """
 import asyncio
 import os
+import socket
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FTimeout
 from typing import Optional
+from urllib.parse import urlparse
 
 import yt_dlp
 
@@ -111,7 +115,9 @@ def _run(search: str, fmt: str, client: Optional[list], proxy: Optional[str],
 
     if proxy:
         opts["proxy"] = proxy
-        # با پروکسی، تایم‌اوت کوتاه تا پروکسی خراب سریع رد شود
+        # با پروکسی، تایم‌اوت کوتاه تا پروکسی خراب سریع رد شود.
+        # نکته: socket_timeout به‌تنهایی کل درخواست را محدود نمی‌کند؛
+        # اجرای واقعی زیر یک مهلت سخت (hard timeout) قرار می‌گیرد.
         opts["socket_timeout"] = int(os.environ.get("PROXY_TIMEOUT", "8"))
         opts["retries"] = 0
     if download:
@@ -128,9 +134,27 @@ def _run(search: str, fmt: str, client: Optional[list], proxy: Optional[str],
     return info
 
 
+def _proxy_alive(proxy: str, timeout: float = 3.0) -> bool:
+    """پیش‌بررسی سریع TCP: آیا پروکسی اصلاً پاسخ می‌دهد؟ (رد سریع مرده‌ها)"""
+    try:
+        u = urlparse(proxy)
+        host, port = u.hostname, u.port or 8080
+        if not host:
+            return False
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _try_clients(search: str, fmt: str, clients: list, proxy: Optional[str],
                  download: bool, out_dir: str):
-    """روی چند کلاینت با یک پروکسی مشخص تلاش می‌کند. (info, None) یا (None, last_err)."""
+    """روی چند کلاینت با یک پروکسی مشخص تلاش می‌کند. (info, None) یا (None, last_err).
+
+    هر تلاش زیر یک مهلت سخت (hard timeout) قرار دارد تا پروکسی/شبکه‌ی کند
+    هرگز کل سیستم را قفل نکند.
+    """
+    hard = float(os.environ.get("ATTEMPT_HARD_TIMEOUT", "15" if proxy else "30"))
     last_err = None
     for client in clients:
         label = ",".join(client)
@@ -138,7 +162,18 @@ def _try_clients(search: str, fmt: str, clients: list, proxy: Optional[str],
         t0 = time.monotonic()
         logs.stage_start("YT_TRY", client=label, proxy=pxy)
         try:
-            info = _run(search, fmt, client, proxy, download, out_dir)
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_run, search, fmt, client, proxy, download, out_dir)
+                try:
+                    info = fut.result(timeout=hard)
+                except FTimeout:
+                    logs.stage_fail("YT_TRY", err=f"مهلت {hard:.0f}s تمام شد",
+                                    took=time.monotonic() - t0, client=label, proxy=pxy)
+                    last_err = TimeoutError(f"hard timeout {hard}s")
+                    # با پروکسیِ کند، کل پروکسی را رها کن؛ در حالت مستقیم سراغ کلاینت بعدی
+                    if proxy:
+                        return None, last_err
+                    continue
             logs.stage_ok("YT_TRY", took=time.monotonic() - t0, client=label,
                           proxy=pxy, title=info.get("title", "?"))
             return info, None
@@ -182,7 +217,13 @@ def _extract_with_fallback(query: str, video: bool, download: bool = False, out_
         raise err if err else RuntimeError("پروکسی موجود نیست")
 
     last_err = err
+    tried = 0
     for i, proxy in enumerate(proxy_list, 1):
+        # پیش‌بررسی سریع: پروکسی مرده را بدون اتلاف وقت رد کن
+        if not _proxy_alive(proxy):
+            proxies.mark_bad(proxy)
+            continue
+        tried += 1
         info, e = _try_clients(search, fmt, _CLIENTS_PROXY, proxy, download, out_dir)
         if info is not None:
             proxies.mark_good(proxy)
@@ -191,7 +232,7 @@ def _extract_with_fallback(query: str, video: bool, download: bool = False, out_
         proxies.mark_bad(proxy)
         last_err = e or last_err
 
-    logs.stage_fail("YT_EXTRACT", err=f"همه پروکسی‌ها ناموفق ({len(proxy_list)} تلاش)")
+    logs.stage_fail("YT_EXTRACT", err=f"همه پروکسی‌ها ناموفق ({tried} پروکسی زنده امتحان شد)")
     raise last_err if last_err else RuntimeError("استخراج ناموفق")
 
 
