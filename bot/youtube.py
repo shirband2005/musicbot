@@ -1,7 +1,11 @@
 """جست‌وجو و استخراج اطلاعات از یوتیوب با استفاده از yt-dlp.
 
-سیستم لاگ‌گیری دقیق: هر مرحله (جست‌وجو/استخراج/دانلود) با وضعیت شفاف
-در لاگ ثبت می‌شود و زمان اجرا و نتیجه مشخص است.
+استراتژی دور زدن بلاک IP ابری:
+  1. اول بدون پروکسی (اگر IP سرور تمیز باشد سریع‌ترین است).
+  2. اگر خطای بات/بلاک خوردیم و پروکسی فعال است، روی چند پروکسی از استخر
+     چرخشی تلاش می‌کنیم تا یکی جواب دهد.
+  3. برای هر تلاش، چند player_client هم امتحان می‌شود.
+سیستم لاگ‌گیری دقیق: هر تلاش با وضعیت شفاف (کلاینت + پروکسی + زمان) ثبت می‌شود.
 """
 import asyncio
 import os
@@ -12,35 +16,37 @@ import yt_dlp
 
 import config
 from bot import logs
+from bot import proxies
 
-# --- گزینه‌های پایه yt-dlp ---
-# نکته: player_client را دیگر به‌صورت ثابت مجبور نمی‌کنیم؛ اجازه می‌دهیم
-# yt-dlp بر اساس کوکی/محیط بهترین کلاینت را انتخاب کند. اگر کوکی نبود،
-# روی زنجیره‌ای از کلاینت‌ها تلاش می‌کنیم.
 _YDL_COMMON = {
     "quiet": True,
     "no_warnings": True,
     "nocheckcertificate": True,
     "geo_bypass": True,
     "socket_timeout": 20,
-    "retries": 3,
+    "retries": 2,
 }
 
-# زنجیره فرمت انعطاف‌پذیر (هر چه کلاینت فعال برگرداند پذیرفته شود)
 _AUDIO_FMT = "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best"
 _VIDEO_FMT = (
     "(bestvideo[height<=?720][ext=mp4])+(bestaudio[ext=m4a])/"
     "best[height<=?720]/best"
 )
 
-# کلاینت‌هایی که وقتی کوکی نداریم امتحان می‌شوند (به ترتیب اولویت)
-_CLIENT_FALLBACKS = [
-    ["android"],
-    ["ios"],
-    ["tv"],
-    ["mweb"],
-    ["web"],
-]
+# کلاینت‌هایی که بدون پروکسی امتحان می‌شوند
+_CLIENTS_DIRECT = [["android"], ["ios"], ["tv"], ["web_safari"]]
+# با پروکسی، کلاینت سبک‌تر (تلاش کمتر برای سرعت)
+_CLIENTS_PROXY = [["android"], ["ios"]]
+
+# نشانه‌های خطای بلاک IP که باید روی پروکسی سوییچ کنیم
+_BLOCK_SIGNS = (
+    "sign in to confirm",
+    "not a bot",
+    "http error 403",
+    "unable to download",
+    "failed to extract",
+    "login_required",
+)
 
 
 def has_cookies() -> bool:
@@ -75,17 +81,26 @@ def _pack(info: dict) -> dict:
     }
 
 
-def _run_extract(search: str, fmt: str, client: Optional[list], download: bool, out_dir: str = "") -> dict:
-    """یک تلاش استخراج با کلاینت مشخص."""
+def _is_block_error(msg: str) -> bool:
+    low = msg.lower()
+    return any(sign in low for sign in _BLOCK_SIGNS)
+
+
+def _run(search: str, fmt: str, client: Optional[list], proxy: Optional[str],
+         download: bool, out_dir: str) -> dict:
     opts = {**_YDL_COMMON, **_cookie_opts(), "format": fmt}
     if client:
         opts["extractor_args"] = {"youtube": {"player_client": client}}
+    if proxy:
+        opts["proxy"] = proxy
+        # با پروکسی، تایم‌اوت کوتاه تا پروکسی خراب سریع رد شود
+        opts["socket_timeout"] = int(os.environ.get("PROXY_TIMEOUT", "8"))
+        opts["retries"] = 0
     if download:
         opts["outtmpl"] = os.path.join(out_dir, "%(id)s.%(ext)s")
         opts["postprocessors"] = [
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
         ]
-
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(search, download=download)
         if "entries" in info:
@@ -95,48 +110,75 @@ def _run_extract(search: str, fmt: str, client: Optional[list], download: bool, 
     return info
 
 
+def _try_clients(search: str, fmt: str, clients: list, proxy: Optional[str],
+                 download: bool, out_dir: str):
+    """روی چند کلاینت با یک پروکسی مشخص تلاش می‌کند. (info, None) یا (None, last_err)."""
+    last_err = None
+    for client in clients:
+        label = ",".join(client)
+        pxy = proxy.split("@")[-1] if proxy else "direct"
+        t0 = time.monotonic()
+        logs.stage_start("YT_TRY", client=label, proxy=pxy)
+        try:
+            info = _run(search, fmt, client, proxy, download, out_dir)
+            logs.stage_ok("YT_TRY", took=time.monotonic() - t0, client=label,
+                          proxy=pxy, title=info.get("title", "?"))
+            return info, None
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            msg = str(e)
+            logs.stage_fail("YT_TRY", err=f"{type(e).__name__}: {msg[:120]}",
+                            took=time.monotonic() - t0, client=label, proxy=pxy)
+            low = msg.lower()
+            if any(k in low for k in ("video unavailable", "private video", "removed")):
+                return None, e  # خطای محتوایی — ادامه بی‌فایده است
+    return None, last_err
+
+
 def _extract_with_fallback(query: str, video: bool, download: bool = False, out_dir: str = "") -> dict:
-    """استخراج با تلاش روی چند کلاینت تا موفقیت. لاگ دقیق هر تلاش."""
     is_url = query.startswith(("http://", "https://"))
     search = query if is_url else f"ytsearch1:{query}"
     fmt = _VIDEO_FMT if video else _AUDIO_FMT
 
-    # اگر کوکی داریم، اول بدون اجبار کلاینت (اجازه انتخاب خودکار) تلاش کن
-    attempts: list[Optional[list]] = []
-    if has_cookies():
-        logs.info("YT: کوکی موجود است — تلاش با انتخاب خودکار کلاینت")
-        attempts.append(None)
-    attempts += _CLIENT_FALLBACKS
+    logs.info("YT: کوکی=%s | پروکسی=%s", has_cookies(), proxies.enabled())
 
-    last_err: Optional[Exception] = None
-    for client in attempts:
-        label = "auto" if client is None else ",".join(client)
-        t0 = time.monotonic()
-        logs.stage_start("YT_TRY", query=query, client=label, video=video)
-        try:
-            info = _run_extract(search, fmt, client, download, out_dir)
-            took = time.monotonic() - t0
-            logs.stage_ok("YT_TRY", took=took, client=label, title=info.get("title", "?"))
+    # مرحله ۱: تلاش مستقیم (بدون پروکسی)
+    info, err = _try_clients(search, fmt, _CLIENTS_DIRECT, None, download, out_dir)
+    if info is not None:
+        return info
+
+    # اگر خطا مربوط به بلاک نیست، پروکسی هم کمکی نمی‌کند
+    if err and not _is_block_error(str(err)):
+        logs.stage_fail("YT_EXTRACT", err=f"خطای غیربلاکی: {str(err)[:120]}")
+        raise err
+
+    # مرحله ۲: چرخش روی استخر پروکسی
+    if not proxies.enabled():
+        logs.stage_fail("YT_EXTRACT", err="بلاک IP و پروکسی غیرفعال است")
+        raise err if err else RuntimeError("بلاک IP")
+
+    proxy_list = proxies.candidates(limit=int(os.environ.get("PROXY_MAX_TRY", "40")))
+    logs.info("YT: سوییچ به پروکسی — %d کاندید", len(proxy_list))
+    if not proxy_list:
+        logs.stage_fail("YT_EXTRACT", err="استخر پروکسی خالی است")
+        raise err if err else RuntimeError("پروکسی موجود نیست")
+
+    last_err = err
+    for i, proxy in enumerate(proxy_list, 1):
+        info, e = _try_clients(search, fmt, _CLIENTS_PROXY, proxy, download, out_dir)
+        if info is not None:
+            proxies.mark_good(proxy)
+            logs.stage_ok("YT_EXTRACT", note=f"موفق با پروکسی #{i}")
             return info
-        except Exception as e:  # noqa: BLE001
-            took = time.monotonic() - t0
-            last_err = e
-            msg = str(e)
-            logs.stage_fail("YT_TRY", err=f"{type(e).__name__}: {msg[:160]}", took=took, client=label)
-            # اگر خطا ربطی به دسترسی/بلاک ندارد (مثلاً ویدیو حذف‌شده)، دیگر تلاش نکن
-            low = msg.lower()
-            if any(k in low for k in ("video unavailable", "private video", "removed")):
-                break
-            continue
+        proxies.mark_bad(proxy)
+        last_err = e or last_err
 
-    # همه تلاش‌ها شکست خورد
-    logs.stage_fail("YT_EXTRACT", err=f"همه کلاینت‌ها ناموفق — {last_err}")
+    logs.stage_fail("YT_EXTRACT", err=f"همه پروکسی‌ها ناموفق ({len(proxy_list)} تلاش)")
     raise last_err if last_err else RuntimeError("استخراج ناموفق")
 
 
 def _extract(query: str, video: bool) -> dict:
-    info = _extract_with_fallback(query, video, download=False)
-    return _pack(info)
+    return _pack(_extract_with_fallback(query, video, download=False))
 
 
 def _download(query: str, out_dir: str) -> dict:
@@ -152,13 +194,11 @@ def _download(query: str, out_dir: str) -> dict:
 
 
 async def get_media(query: str, video: bool = False) -> dict:
-    """جست‌وجوی آهنگ/ویدیو و برگرداندن لینک استریم قابل‌پخش."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _extract, query, video)
 
 
 async def download_audio(query: str, out_dir: str = "downloads") -> dict:
-    """دانلود آهنگ به‌صورت فایل mp3 (اجرای همزمان در ترد جدا)."""
     os.makedirs(out_dir, exist_ok=True)
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _download, query, out_dir)
