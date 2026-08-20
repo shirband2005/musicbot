@@ -5,8 +5,42 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.queue import Track, progress_bar
 
-# کاور ثابت برندینگ‌شده — کاربر بعداً فایل نهایی را جایگزین می‌کند.
-COVER_PATH = os.environ.get("COVER_PATH", "assets/cover.jpg").strip() or "assets/cover.jpg"
+# کاور ثابت پنل. می‌تواند عکس (jpg/png) یا گیف/ویدیو (gif/mp4) باشد.
+# روی Volume ذخیره می‌شود تا با دیپلوی جدید پاک نشود.
+COVER_PATH = os.environ.get("COVER_PATH", "/data/cover").strip() or "/data/cover"
+
+# پسوندهای شناخته‌شده برای پیدا کردن فایل کاور (چون ممکن است بدون پسوند ذخیره شود)
+_COVER_EXTS = [".gif", ".mp4", ".jpg", ".jpeg", ".png", ".webp", ""]
+
+_ANIM_EXTS = (".gif", ".mp4")
+
+
+def cover_file() -> str:
+    """مسیر فایل کاور موجود را برمی‌گرداند (با هر پسوند)، یا رشته خالی.
+
+    اول COVER_PATH (روی Volume) بعد فایل تعبیه‌شده در assets/ بررسی می‌شود.
+    """
+    candidates = [COVER_PATH]
+    # مسیر تعبیه‌شده در ریپو به‌عنوان fallback
+    candidates.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "cover"))
+    for base in candidates:
+        if os.path.isfile(base):
+            return base
+        for ext in _COVER_EXTS:
+            p = base + ext
+            if p and os.path.isfile(p):
+                return p
+    return ""
+
+
+def has_cover() -> bool:
+    return bool(cover_file())
+
+
+def cover_is_animation() -> bool:
+    """آیا کاور گیف/ویدیو است (نیازمند send_animation)؟"""
+    f = cover_file()
+    return bool(f) and f.lower().endswith(_ANIM_EXTS)
 
 
 def panel_text(track: Track, volume: int = 100, muted: bool = False) -> str:
@@ -67,4 +101,5 @@ def panel_keyboard(
 
 
 def has_cover() -> bool:
-    return os.path.isfile(COVER_PATH)
+    return bool(cover_file())
+

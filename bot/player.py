@@ -12,7 +12,7 @@ from bot import database as db
 from bot import logs
 from bot import queue as q
 from bot import youtube
-from bot.panel import COVER_PATH, has_cover, panel_keyboard, panel_text
+from bot.panel import cover_file, cover_is_animation, has_cover, panel_keyboard, panel_text
 from bot.queue import Track
 
 LOGGER = logging.getLogger("musicbot.player")
@@ -174,9 +174,13 @@ async def _send_panel(chat_id: int, new: bool = False) -> None:
     vol, muted = get_volume(chat_id), is_muted(chat_id)
     text = panel_text(track, vol, muted)
     kb = panel_keyboard(chat_id, track, vol, muted)
+    cover = cover_file()
     try:
-        if has_cover():
-            msg = await app.send_photo(chat_id, COVER_PATH, caption=text, reply_markup=kb)
+        if cover and cover_is_animation():
+            # گیف/ویدیو → send_animation
+            msg = await app.send_animation(chat_id, cover, caption=text, reply_markup=kb)
+        elif cover:
+            msg = await app.send_photo(chat_id, cover, caption=text, reply_markup=kb)
         else:
             msg = await app.send_message(chat_id, text, reply_markup=kb)
         _panel_msg[chat_id] = msg.id
