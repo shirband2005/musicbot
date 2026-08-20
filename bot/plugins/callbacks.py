@@ -1,5 +1,6 @@
 """مدیریت دکمه‌های پنل پخش (callback query) و دکمه راهنما."""
 import logging
+import os
 
 from pyrogram import Client, filters
 from pyrogram.types import CallbackQuery
@@ -7,6 +8,7 @@ from pyrogram.types import CallbackQuery
 from bot import call
 from bot import player
 from bot import queue as q
+from bot import youtube
 from bot.plugins.start import HELP_TEXT
 
 LOGGER = logging.getLogger("musicbot.callbacks")
@@ -111,17 +113,43 @@ async def panel_cb(client: Client, cq: CallbackQuery):
             lines.append("\nصف بعدی خالی است.")
         await cq.answer("\n".join(lines)[:200], show_alert=True)
 
-    # --- دریافت رسانه: لینک منبع را می‌فرستد ---
+    # --- دریافت رسانه: دانلود فایل mp3 و ارسال آن ---
     elif action == "getmedia":
-        await cq.answer("لینک منبع ارسال شد", show_alert=False)
+        await cq.answer("📥 در حال دانلود فایل...", show_alert=False)
+        query = track.query or track.webpage_url or track.title
+        status = None
         try:
-            await client.send_message(
+            status = await client.send_message(chat_id, f"📥 در حال دانلود:\n**{track.title}**")
+            info = await youtube.download_audio(query)
+            path = info["path"]
+            if not os.path.isfile(path):
+                # جست‌وجوی هر فایل با شناسه مشابه در پوشه دانلود
+                raise FileNotFoundError("فایل دانلود پیدا نشد")
+            await client.send_audio(
                 chat_id,
-                f"📥 **{track.title}**\n{track.webpage_url}",
-                disable_web_page_preview=False,
+                audio=path,
+                title=info.get("title", track.title),
+                performer=info.get("uploader", ""),
+                duration=int(info.get("duration") or 0),
+                caption=f"🎵 {info.get('title', track.title)}",
             )
+            if status:
+                await status.delete()
+            # پاک‌سازی فایل پس از ارسال
+            try:
+                os.remove(path)
+            except OSError:
+                pass
         except Exception as e:  # noqa: BLE001
-            LOGGER.debug("getmedia: %s", e)
+            LOGGER.warning("getmedia download: %s", e)
+            msg = f"❌ خطا در دانلود فایل:\n`{e}`"
+            if status:
+                try:
+                    await status.edit_text(msg)
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                await client.send_message(chat_id, msg)
 
     elif action == "refresh":
         await player.refresh_panel(chat_id)

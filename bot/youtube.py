@@ -70,3 +70,46 @@ async def get_media(query: str, video: bool = False) -> dict:
     """جست‌وجوی آهنگ/ویدیو و برگرداندن لینک استریم قابل‌پخش."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _extract, query, video)
+
+
+def _download(query: str, out_dir: str) -> dict:
+    """دانلود فایل صوتی (mp3) و برگرداندن مسیر فایل و عنوان."""
+    is_url = query.startswith(("http://", "https://"))
+    search = query if is_url else f"ytsearch1:{query}"
+
+    opts = {
+        **_YDL_COMMON,
+        **_cookie_opts(),
+        "format": "bestaudio/best",
+        "outtmpl": os.path.join(out_dir, "%(id)s.%(ext)s"),
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ],
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(search, download=True)
+        if "entries" in info:
+            if not info["entries"]:
+                raise ValueError("چیزی پیدا نشد")
+            info = info["entries"][0]
+
+    # مسیر خروجی پس از تبدیل به mp3
+    path = os.path.join(out_dir, f"{info['id']}.mp3")
+    return {
+        "path": path,
+        "title": info.get("title", "audio"),
+        "duration": info.get("duration"),
+        "thumbnail": info.get("thumbnail"),
+        "uploader": info.get("uploader", ""),
+    }
+
+
+async def download_audio(query: str, out_dir: str = "downloads") -> dict:
+    """دانلود آهنگ به‌صورت فایل mp3 (اجرای همزمان در ترد جدا)."""
+    os.makedirs(out_dir, exist_ok=True)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _download, query, out_dir)
