@@ -8,6 +8,7 @@ from pyrogram.errors import MessageNotModified
 from pytgcalls.types import AudioQuality, MediaStream, VideoQuality
 
 from bot import app, call
+from bot import database as db
 from bot import logs
 from bot import queue as q
 from bot import youtube
@@ -62,9 +63,24 @@ def _stream(track: Track) -> MediaStream:
 
 
 async def _ensure_local_file(track: Track) -> bool:
-    """اگر فایل محلی نداریم، دانلودش کن (از طریق پروکسی). True اگر آماده شد."""
+    """اگر فایل محلی نداریم، اول کش دیتابیس را چک کن، بعد دانلود کن.
+
+    - اگر همین آهنگ قبلاً دانلود شده و فایلش هست → بدون دانلود دوباره پخش.
+    - پس از دانلود جدید، در کش ثبت و فقط ۱۰ فایل اخیر نگه داشته می‌شود.
+    """
     if track.local_path and os.path.isfile(track.local_path):
         return True
+
+    # ۱) بررسی کش با video_id (اگر می‌دانیم کدام ویدیوست)
+    vid = getattr(track, "video_id", "") or ""
+    if vid:
+        cached = db.cache_get(vid)
+        if cached and os.path.isfile(cached["path"]):
+            track.local_path = cached["path"]
+            logs.info("CACHE HIT | %s (بدون دانلود دوباره)", track.title)
+            return True
+
+    # ۲) دانلود جدید (از طریق پروکسی)
     query = track.query or track.webpage_url or track.title
     try:
         with logs.stage("DOWNLOAD", title=track.title, video=track.is_video):
@@ -72,12 +88,33 @@ async def _ensure_local_file(track: Track) -> bool:
         path = info.get("path", "")
         if path and os.path.isfile(path):
             track.local_path = path
+            vid = info.get("id") or vid
+            if vid:
+                track.video_id = vid
+                db.cache_put(vid, path, info.get("title", track.title),
+                             int(info.get("duration") or 0), track.is_video)
+                _prune_cache()
             return True
         logs.warn("DOWNLOAD: فایل ساخته نشد | %s", track.title)
         return False
     except Exception as e:  # noqa: BLE001
         logs.warn("DOWNLOAD error | %s: %s", track.title, e)
         return False
+
+
+def _prune_cache() -> None:
+    """فقط ۱۰ فایل اخیر را نگه دار؛ بقیه را از دیسک پاک کن."""
+    keep = int(os.environ.get("CACHE_KEEP", "10"))
+    try:
+        for path in db.cache_prune(keep=keep):
+            try:
+                if path and os.path.isfile(path):
+                    os.remove(path)
+                    logs.info("CACHE PRUNE | حذف %s", os.path.basename(path))
+            except OSError:
+                pass
+    except Exception as e:  # noqa: BLE001
+        logs.debug("prune cache: %s", e) if hasattr(logs, "debug") else None
 
 
 async def start_playback(chat_id: int, track: Track) -> None:

@@ -31,11 +31,14 @@ _YDL_COMMON = {
     "retries": 2,
 }
 
-_AUDIO_FMT = "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best"
-_VIDEO_FMT = (
-    "(bestvideo[height<=?720][ext=mp4])+(bestaudio[ext=m4a])/"
-    "best[height<=?720]/best"
-)
+_AUDIO_FMT = os.environ.get(
+    "AUDIO_FORMAT",
+    "worstaudio[abr>=48]/bestaudio[ext=m4a][abr<=96]/bestaudio/best",
+).strip()
+_VIDEO_FMT = os.environ.get(
+    "VIDEO_FORMAT",
+    "(bestvideo[height<=?360][ext=mp4])+(bestaudio[ext=m4a])/best[height<=?360]/best",
+).strip()
 
 # آدرس سرویس PO Token محلی (bgutil) — در همان کانتینر اجرا می‌شود.
 _POT_BASE_URL = os.environ.get("POT_BASE_URL", "http://127.0.0.1:4416").strip()
@@ -129,9 +132,14 @@ def _run(search: str, fmt: str, client: Optional[list], proxy: Optional[str],
         opts["retries"] = 0
     if download:
         opts["outtmpl"] = os.path.join(out_dir, "%(id)s.%(ext)s")
-        opts["postprocessors"] = [
-            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
-        ]
+        # فقط برای دانلود صوتی، به mp3 با کیفیت پایین (سریع) تبدیل کن.
+        # برای ویدیو، فایل ویدیو دست‌نخورده بماند.
+        is_video_dl = fmt == _VIDEO_FMT
+        if not is_video_dl:
+            mp3q = os.environ.get("MP3_QUALITY", "96").strip()
+            opts["postprocessors"] = [
+                {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": mp3q}
+            ]
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(search, download=download)
         if "entries" in info:

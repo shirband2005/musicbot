@@ -79,6 +79,7 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
         requester=_requester_name(message),
         is_video=is_video,
         query=query,
+        video_id=info.get("id") or "",
     )
 
     try:
