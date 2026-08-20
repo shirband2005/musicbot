@@ -131,8 +131,8 @@ async def _send_panel(chat_id: int, new: bool = False) -> None:
     if track is None:
         return
 
-    if new:
-        await _delete_panel(chat_id)
+    # همیشه پنل قبلی این گروه را (هرجا بود) حذف کن تا چت شلوغ نشود.
+    await _delete_panel(chat_id)
 
     vol, muted = get_volume(chat_id), is_muted(chat_id)
     text = panel_text(track, vol, muted)

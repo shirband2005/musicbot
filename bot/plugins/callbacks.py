@@ -37,11 +37,22 @@ async def help_nav_cb(client: Client, cq: CallbackQuery):
 
 async def _apply_volume(chat_id: int):
     """اعمال میزان صدای فعلی روی کال (با در نظر گرفتن حالت بیصدا)."""
-    vol = 0 if player.is_muted(chat_id) else player.get_volume(chat_id)
+    if player.is_muted(chat_id):
+        try:
+            await call.mute(chat_id)
+        except Exception as e:  # noqa: BLE001
+            LOGGER.warning("mute: %s", e)
+        return
+    # بازکردن صدا سپس تنظیم میزان (حداقل ۱ چون ۰ توسط برخی نسخه‌ها رد می‌شود)
+    try:
+        await call.unmute(chat_id)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("unmute: %s", e)
+    vol = max(1, min(200, player.get_volume(chat_id)))
     try:
         await call.change_volume_call(chat_id, vol)
     except Exception as e:  # noqa: BLE001
-        LOGGER.debug("volume apply: %s", e)
+        LOGGER.warning("change_volume(%s): %s", vol, e)
 
 
 @Client.on_callback_query(filters.regex(r"^p\|"))
