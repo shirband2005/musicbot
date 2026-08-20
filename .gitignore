@@ -15,3 +15,6 @@ cookies.txt
 # فایل‌های موقت دانلود
 downloads/
 *.log
+
+# سرویس bgutil (در Docker کلون می‌شود)
+bgutil/

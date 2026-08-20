@@ -1,16 +1,39 @@
-# ---- ربات موزیک‌پلیر فارسی ----
+# ---- ربات موزیک‌پلیر فارسی + سرویس PO Token (bgutil) ----
 FROM python:3.11-slim
 
-# ffmpeg برای پردازش صدا/ویدیو الزامی است
+# نسخه‌ی سرویس PO Token
+ARG BGUTIL_VERSION=1.3.1
+
+# ابزارهای لازم: ffmpeg (پردازش رسانه) + git/curl (کلون) + Node.js
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg && \
+    apt-get install -y --no-install-recommends \
+        ffmpeg git curl ca-certificates gnupg && \
+    # نصب Node.js 20 (برای سرویس bgutil)
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update && apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# --- ساخت سرویس PO Token (bgutil) ---
+# سرور Node که هر بار توکن BotGuard تازه تولید می‌کند (پورت 4416).
+RUN git clone --depth 1 --branch ${BGUTIL_VERSION} \
+        https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /app/bgutil && \
+    cd /app/bgutil/server && \
+    npm ci && \
+    npx tsc && \
+    npm cache clean --force
+
+# --- نصب وابستگی‌های پایتون (شامل پلاگین bgutil برای yt-dlp) ---
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "-m", "main"]
+# اجرای هم‌زمان سرویس توکن + ربات
+RUN chmod +x /app/start.sh
+CMD ["/app/start.sh"]

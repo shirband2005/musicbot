@@ -33,10 +33,20 @@ _VIDEO_FMT = (
     "best[height<=?720]/best"
 )
 
-# کلاینت‌هایی که بدون پروکسی امتحان می‌شوند
-_CLIENTS_DIRECT = [["android"], ["ios"], ["tv"], ["web_safari"]]
+# آدرس سرویس PO Token محلی (bgutil) — در همان کانتینر اجرا می‌شود.
+_POT_BASE_URL = os.environ.get("POT_BASE_URL", "http://127.0.0.1:4416").strip()
+
+
+def _pot_available() -> bool:
+    """آیا سرویس PO Token در دسترس است؟ (فعال بودن پلاگین)"""
+    return os.environ.get("DISABLE_POT", "").strip().lower() not in ("1", "true", "yes")
+
+
+# کلاینت‌هایی که بدون پروکسی امتحان می‌شوند.
+# با PO Token، mweb و web_safari توصیه رسمی‌اند؛ بقیه به‌عنوان fallback.
+_CLIENTS_DIRECT = [["mweb"], ["web_safari"], ["tv"], ["ios"], ["android"]]
 # با پروکسی، کلاینت سبک‌تر (تلاش کمتر برای سرعت)
-_CLIENTS_PROXY = [["android"], ["ios"]]
+_CLIENTS_PROXY = [["mweb"], ["web_safari"], ["ios"]]
 
 # نشانه‌های خطای بلاک IP که باید روی پروکسی سوییچ کنیم
 _BLOCK_SIGNS = (
@@ -89,8 +99,16 @@ def _is_block_error(msg: str) -> bool:
 def _run(search: str, fmt: str, client: Optional[list], proxy: Optional[str],
          download: bool, out_dir: str) -> dict:
     opts = {**_YDL_COMMON, **_cookie_opts(), "format": fmt}
+
+    extractor_args = {}
     if client:
-        opts["extractor_args"] = {"youtube": {"player_client": client}}
+        extractor_args["youtube"] = {"player_client": client}
+    # اتصال به سرویس PO Token محلی (bgutil) برای تولید خودکار توکن
+    if _pot_available():
+        extractor_args["youtubepot-bgutilhttp"] = {"base_url": [_POT_BASE_URL]}
+    if extractor_args:
+        opts["extractor_args"] = extractor_args
+
     if proxy:
         opts["proxy"] = proxy
         # با پروکسی، تایم‌اوت کوتاه تا پروکسی خراب سریع رد شود
