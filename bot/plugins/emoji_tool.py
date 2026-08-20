@@ -1,10 +1,11 @@
 """ابزار کمکی: گرفتن custom_emoji_id از ایموجی پرمیوم + تست ارسال توسط ربات.
 
-استفاده (فقط مالک): یک یا چند ایموجی پرمیوم بفرست یا روی پیامی که ایموجی پرمیوم
-دارد ریپلای کن و بنویس «ایدی ایموجی». ربات:
+استفاده (فقط مالک): یک یا چند ایموجی پرمیوم بفرست همراه دستور «ایدی ایموجی»،
+یا روی پیامی که ایموجی پرمیوم دارد ریپلای کن. ربات:
   1) شناسه‌ی هر ایموجی را می‌دهد (برای استفاده در پنل)
-  2) همان ایموجی‌ها را دوباره می‌فرستد تا ببینیم ربات می‌تواند نمایش‌شان دهد
-     (اگر مالکِ ربات Premium باشد کار می‌کند).
+  2) همان ایموجی‌ها را دوباره می‌فرستد (تست نمایش‌پذیری توسط ربات).
+
+نکته فنی: تلگرام طول entity را با UTF-16 code unit می‌شمرد (نه len پایتون).
 """
 import logging
 
@@ -18,8 +19,13 @@ LOGGER = logging.getLogger("musicbot.emojitool")
 OWNER_ID = 8406519786  # فقط مالک
 
 
+def _u16len(s: str) -> int:
+    """طول رشته برحسب UTF-16 code unit (مبنای شمارش تلگرام)."""
+    return len(s.encode("utf-16-le")) // 2
+
+
 def _extract(msg: Message):
-    """شناسه‌ی ایموجی‌های پرمیوم یک پیام را استخراج می‌کند: [(emoji_text, id), ...]."""
+    """[(emoji_text, id), ...] از ایموجی‌های پرمیوم یک پیام."""
     out = []
     if not msg or not msg.entities:
         return out
@@ -36,57 +42,46 @@ async def emoji_id_cmd(client: Client, message: Message):
     if not message.from_user or message.from_user.id != OWNER_ID:
         return
 
-    # منبع: پیام ریپلای‌شده یا خودِ پیام
     source = message.reply_to_message or message
     found = _extract(source)
 
     if not found:
         await message.reply_text(
-            "یک یا چند **ایموجی پرمیوم** را در همین پیام بفرست به‌همراه دستور، "
-            "یا روی پیامی که ایموجی پرمیوم دارد ریپلای کن و بنویس «ایدی ایموجی»."
+            "یک یا چند **ایموجی پرمیوم** را همراه دستور «ایدی ایموجی» بفرست، "
+            "یا روی پیامی که ایموجی پرمیوم دارد ریپلای کن."
         )
         return
 
-    # ۱) گزارش شناسه‌ها
-    lines = ["🆔 **شناسه‌ی ایموجی‌ها:**\n"]
-    ids = []
-    for seg, eid in found:
-        lines.append(f"`{eid}`")
-        ids.append(eid)
-    report = "\n".join(lines)
+    # ۱) گزارش شناسه‌ها (هر کدام روی یک خط برای کپی راحت)
+    ids = [eid for _, eid in found]
+    report = "🆔 **شناسه‌ی ایموجی‌ها:**\n\n" + "\n".join(f"`{eid}`" for eid in ids)
+    await message.reply_text(report)
 
-    # ۲) تست ارسال: همان ایموجی‌ها را با entity سفارشی از طرف ربات بفرست
-    test_text = "".join("🎵" for _ in ids)  # هر ایموجی روی یک کاراکتر پایه
+    # ۲) تست ارسال با ایموجی‌های واقعی کاربر و طول UTF-16 صحیح
+    prefix = "تست نمایش توسط ربات: "
+    # کاراکترهای پایه‌ی همان ایموجی‌های کاربر را استفاده کن (طول واقعی‌شان)
+    segs = [seg for seg, _ in found]
+    test_text = prefix + "".join(segs)
+
     entities = []
-    offset = 0
-    for eid in ids:
+    offset = _u16len(prefix)
+    for (seg, eid) in found:
+        seg_len = _u16len(seg)
         entities.append(
             MessageEntity(
                 type=enums.MessageEntityType.CUSTOM_EMOJI,
                 offset=offset,
-                length=len("🎵"),
+                length=seg_len,
                 custom_emoji_id=eid,
             )
         )
-        offset += len("🎵")
+        offset += seg_len
 
-    await message.reply_text(report)
     try:
-        await client.send_message(
-            message.chat.id,
-            "تست نمایش توسط ربات: " + test_text,
-            entities=[
-                MessageEntity(
-                    type=enums.MessageEntityType.CUSTOM_EMOJI,
-                    offset=len("تست نمایش توسط ربات: ") + i * len("🎵"),
-                    length=len("🎵"),
-                    custom_emoji_id=eid,
-                )
-                for i, eid in enumerate(ids)
-            ],
-        )
+        await client.send_message(message.chat.id, test_text, entities=entities)
         await message.reply_text(
-            "☝️ اگر بالا ایموجی‌های پرمیوم **متحرک** دیدی، یعنی ربات می‌تواند نمایش‌شان دهد ✅"
+            "☝️ اگر بالا ایموجی‌های پرمیوم **متحرک** دیدی، یعنی ربات می‌تواند نمایش‌شان دهد ✅\n"
+            "حالا بگو کدام ایموجی کجا برود (کنار کدام دکمه یا در عنوان)."
         )
     except Exception as e:  # noqa: BLE001
         LOGGER.warning("emoji test send failed: %s", e)
