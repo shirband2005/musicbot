@@ -6,7 +6,7 @@ from typing import Dict, Optional
 from pyrogram.errors import MessageNotModified
 from pytgcalls.types import AudioQuality, MediaStream, VideoQuality
 
-from bot import call, app
+from bot import app, call
 from bot import queue as q
 from bot.panel import COVER_PATH, has_cover, panel_keyboard, panel_text
 from bot.queue import Track
@@ -16,12 +16,10 @@ LOGGER = logging.getLogger("musicbot.player")
 # فاصله‌ی بروزرسانی خودکار نوار پیشرفت (ثانیه) — طبق درخواست کاربر ۶ ثانیه
 PROGRESS_INTERVAL = 6
 
-# پیام پنل هر گروه: chat_id -> message_id
 _panel_msg: Dict[int, int] = {}
-# تسک بروزرسانی خودکار هر گروه: chat_id -> asyncio.Task
 _updater: Dict[int, asyncio.Task] = {}
-# میزان صدای فعلی هر گروه
 _volume: Dict[int, int] = {}
+_muted: Dict[int, bool] = {}
 
 
 def get_volume(chat_id: int) -> int:
@@ -32,8 +30,15 @@ def set_volume(chat_id: int, vol: int) -> None:
     _volume[chat_id] = max(0, min(200, vol))
 
 
+def is_muted(chat_id: int) -> bool:
+    return _muted.get(chat_id, False)
+
+
+def set_muted(chat_id: int, val: bool) -> None:
+    _muted[chat_id] = val
+
+
 def _stream(track: Track) -> MediaStream:
-    """ساخت شیء استریم برای py-tgcalls (صوتی یا تصویری)."""
     if track.is_video:
         return MediaStream(
             track.stream_url,
@@ -48,17 +53,12 @@ def _stream(track: Track) -> MediaStream:
 
 
 async def start_playback(chat_id: int, track: Track) -> None:
-    """پیوستن به کال و شروع پخش اولین آهنگ."""
     q.set_now_playing(chat_id, track)
     await call.play(chat_id, _stream(track))
-    await _send_panel(chat_id)
+    await _send_panel(chat_id, new=True)
 
 
 async def play_or_queue(chat_id: int, track: Track) -> int:
-    """اگر چیزی در حال پخش نیست، پخش را شروع می‌کند؛ وگرنه به صف می‌افزاید.
-
-    خروجی: موقعیت در صف (۰ یعنی هم‌اکنون پخش شد).
-    """
     if q.now_playing(chat_id) is None:
         await start_playback(chat_id, track)
         return 0
@@ -66,7 +66,6 @@ async def play_or_queue(chat_id: int, track: Track) -> int:
 
 
 async def skip(chat_id: int) -> Optional[Track]:
-    """پخش آهنگ بعدی صف؛ اگر صف خالی بود، خروج از کال."""
     nxt = q.pop_next(chat_id)
     if nxt is None:
         await stop(chat_id)
@@ -76,10 +75,19 @@ async def skip(chat_id: int) -> Optional[Track]:
     return nxt
 
 
+async def previous(chat_id: int) -> Optional[Track]:
+    prev = q.pop_previous(chat_id)
+    if prev is None:
+        return None
+    await call.play(chat_id, _stream(prev))
+    await _send_panel(chat_id, new=True)
+    return prev
+
+
 async def stop(chat_id: int) -> None:
-    """توقف کامل، پاک‌سازی صف و خروج از کال."""
     q.clear(chat_id)
     _cancel_updater(chat_id)
+    _muted.pop(chat_id, None)
     try:
         await call.leave_call(chat_id)
     except Exception as e:  # noqa: BLE001
@@ -88,17 +96,16 @@ async def stop(chat_id: int) -> None:
 
 # --- مدیریت پنل و بروزرسانی خودکار ---
 async def _send_panel(chat_id: int, new: bool = False) -> None:
-    """ارسال یا بازسازی پنل پخش و شروع بروزرسانی خودکار."""
     track = q.now_playing(chat_id)
     if track is None:
         return
 
-    # پنل قبلی را حذف کن اگر آهنگ جدید است
     if new:
         await _delete_panel(chat_id)
 
-    text = panel_text(track)
-    kb = panel_keyboard(chat_id, get_volume(chat_id))
+    vol, muted = get_volume(chat_id), is_muted(chat_id)
+    text = panel_text(track, vol, muted)
+    kb = panel_keyboard(chat_id, track, vol, muted)
     try:
         if has_cover():
             msg = await app.send_photo(chat_id, COVER_PATH, caption=text, reply_markup=kb)
@@ -127,13 +134,13 @@ async def _delete_panel(chat_id: int) -> None:
 
 
 async def refresh_panel(chat_id: int) -> None:
-    """بروزرسانی متن/کیبورد پنل موجود (بدون ارسال پیام جدید)."""
     track = q.now_playing(chat_id)
     mid = _panel_msg.get(chat_id)
     if track is None or mid is None:
         return
-    text = panel_text(track)
-    kb = panel_keyboard(chat_id, get_volume(chat_id))
+    vol, muted = get_volume(chat_id), is_muted(chat_id)
+    text = panel_text(track, vol, muted)
+    kb = panel_keyboard(chat_id, track, vol, muted)
     try:
         if has_cover():
             await app.edit_message_caption(chat_id, mid, caption=text, reply_markup=kb)
@@ -167,7 +174,6 @@ async def _progress_loop(chat_id: int) -> None:
             if track.paused:
                 continue
             await refresh_panel(chat_id)
-            # اگر به انتهای آهنگ رسیدیم، حلقه را متوقف کن (StreamEnded خودش رد می‌کند)
             if track.duration and track.position() >= track.duration:
                 break
     except asyncio.CancelledError:

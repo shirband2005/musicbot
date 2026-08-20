@@ -1,8 +1,8 @@
-"""مدیریت صف پخش (در RAM) و منطق پخش/رد کردن آهنگ‌ها."""
+"""مدیریت صف پخش (در RAM)، تاریخچه (برای آهنگ قبلی) و منطق پخش."""
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Deque, Dict, Optional
+from dataclasses import dataclass
+from typing import Deque, Dict, List, Optional
 
 
 @dataclass
@@ -15,9 +15,9 @@ class Track:
     thumbnail: Optional[str]
     requester: str  # نام درخواست‌کننده
     is_video: bool = False
-    # زمان شروع پخش واقعی (برای محاسبه نوار پیشرفت)
+    query: str = ""  # عبارت جست‌وجوی اصلی (برای دریافت رسانه/بازپخش)
+    # زمان‌بندی برای نوار پیشرفت
     started_at: float = 0.0
-    # ثانیه‌های سپری‌شده پیش از آخرین resume (برای پشتیبانی از مکث)
     elapsed_before_pause: float = 0.0
     paused: bool = False
 
@@ -37,7 +37,6 @@ class Track:
             self.paused = False
 
     def position(self) -> int:
-        """ثانیه‌ی فعلی پخش."""
         if self.paused:
             pos = self.elapsed_before_pause
         else:
@@ -49,8 +48,10 @@ class Track:
 
 # صف هر گروه: chat_id -> deque[Track]
 _queues: Dict[int, Deque[Track]] = {}
-# آهنگ در حال پخش هر گروه: chat_id -> Track
+# آهنگ در حال پخش هر گروه
 _now_playing: Dict[int, Track] = {}
+# تاریخچه پخش هر گروه (برای «آهنگ قبلی»)
+_history: Dict[int, List[Track]] = {}
 
 
 def get_queue(chat_id: int) -> Deque[Track]:
@@ -58,13 +59,16 @@ def get_queue(chat_id: int) -> Deque[Track]:
 
 
 def add(chat_id: int, track: Track) -> int:
-    """افزودن به صف؛ موقعیت در صف را برمی‌گرداند (۰ یعنی هم‌اکنون پخش می‌شود)."""
     q = get_queue(chat_id)
     q.append(track)
     return len(q) - 1 + (1 if chat_id in _now_playing else 0)
 
 
 def set_now_playing(chat_id: int, track: Track) -> None:
+    # آهنگ فعلی را به تاریخچه منتقل کن
+    cur = _now_playing.get(chat_id)
+    if cur is not None and cur is not track:
+        _history.setdefault(chat_id, []).append(cur)
     _now_playing[chat_id] = track
     track.mark_started()
 
@@ -74,23 +78,40 @@ def now_playing(chat_id: int) -> Optional[Track]:
 
 
 def pop_next(chat_id: int) -> Optional[Track]:
-    """آهنگ بعدی را از صف برمی‌دارد و به‌عنوان در حال پخش تنظیم می‌کند."""
     q = get_queue(chat_id)
     if q:
         track = q.popleft()
         set_now_playing(chat_id, track)
         return track
-    _now_playing.pop(chat_id, None)
+    # صف خالی — آهنگ فعلی هم به تاریخچه برود
+    cur = _now_playing.pop(chat_id, None)
+    if cur is not None:
+        _history.setdefault(chat_id, []).append(cur)
     return None
+
+
+def pop_previous(chat_id: int) -> Optional[Track]:
+    """آهنگ قبلی را از تاریخچه بازیابی می‌کند و آهنگ فعلی را جلوی صف می‌گذارد."""
+    hist = _history.get(chat_id)
+    if not hist:
+        return None
+    prev = hist.pop()
+    cur = _now_playing.get(chat_id)
+    if cur is not None:
+        get_queue(chat_id).appendleft(cur)
+    # تنظیم مستقیم بدون افزودن دوباره به تاریخچه
+    _now_playing[chat_id] = prev
+    prev.mark_started()
+    return prev
 
 
 def clear(chat_id: int) -> None:
     _queues.pop(chat_id, None)
     _now_playing.pop(chat_id, None)
+    _history.pop(chat_id, None)
 
 
-def progress_bar(position: int, duration: int, length: int = 15) -> str:
-    """ساخت نوار پیشرفت متنی همراه با زمان."""
+def progress_bar(position: int, duration: int, length: int = 12) -> str:
     def fmt(sec: int) -> str:
         sec = int(sec)
         m, s = divmod(sec, 60)
@@ -98,9 +119,9 @@ def progress_bar(position: int, duration: int, length: int = 15) -> str:
         return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
     if not duration:
-        return f"🔴 زنده — {fmt(position)}"
+        return f"🔴 زنده  {fmt(position)}"
 
     filled = int(length * position / duration) if duration else 0
     filled = max(0, min(length, filled))
-    bar = "━" * filled + "●" + "─" * (length - filled)
+    bar = "━" * filled + "◉" + "─" * (length - filled)
     return f"{fmt(position)} {bar} {fmt(duration)}"

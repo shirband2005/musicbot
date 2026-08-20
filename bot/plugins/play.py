@@ -65,6 +65,7 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
         thumbnail=info.get("thumbnail"),
         requester=_requester_name(message),
         is_video=is_video,
+        query=query,
     )
 
     try:

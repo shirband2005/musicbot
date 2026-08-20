@@ -11,14 +11,20 @@ from bot.plugins.start import HELP_TEXT
 
 LOGGER = logging.getLogger("musicbot.callbacks")
 
-# مقدار پرش زمانی (ثانیه) هنوز به‌صورت seek واقعی پیاده نشده؛
-# py-tgcalls برای seek نیاز به بازپخش استریم از offset دارد.
-
 
 @Client.on_callback_query(filters.regex(r"^help$"))
 async def help_cb(client: Client, cq: CallbackQuery):
     await cq.message.edit_text(HELP_TEXT)
     await cq.answer()
+
+
+async def _apply_volume(chat_id: int):
+    """اعمال میزان صدای فعلی روی کال (با در نظر گرفتن حالت بیصدا)."""
+    vol = 0 if player.is_muted(chat_id) else player.get_volume(chat_id)
+    try:
+        await call.change_volume_call(chat_id, vol)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("volume apply: %s", e)
 
 
 @Client.on_callback_query(filters.regex(r"^p\|"))
@@ -44,25 +50,21 @@ async def panel_cb(client: Client, cq: CallbackQuery):
         await cq.answer("پنل بسته شد")
         return
 
-    if track is None and action not in ("close",):
+    if track is None:
         await cq.answer("چیزی در حال پخش نیست.", show_alert=True)
         return
 
-    if action == "pause":
-        await call.pause(chat_id)
-        track.mark_paused()
+    # --- پخش/توقف موقت (یک دکمه) ---
+    if action == "playpause":
+        if track.paused:
+            await call.resume(chat_id)
+            track.mark_resumed()
+            await cq.answer("▶️ ادامه یافت")
+        else:
+            await call.pause(chat_id)
+            track.mark_paused()
+            await cq.answer("⏸ متوقف شد")
         await player.refresh_panel(chat_id)
-        await cq.answer("⏸ متوقف شد")
-
-    elif action == "resume":
-        await call.resume(chat_id)
-        track.mark_resumed()
-        await player.refresh_panel(chat_id)
-        await cq.answer("▶️ ادامه یافت")
-
-    elif action == "skip":
-        nxt = await player.skip(chat_id)
-        await cq.answer("⏭ رد شد" if nxt else "⏹ صف خالی شد")
 
     elif action == "stop":
         await player.stop(chat_id)
@@ -72,38 +74,58 @@ async def panel_cb(client: Client, cq: CallbackQuery):
             pass
         await cq.answer("⏹ متوقف شد")
 
+    # --- صدا ---
     elif action in ("vol_up", "vol_down"):
-        vol = player.get_volume(chat_id)
-        vol += 10 if action == "vol_up" else -10
+        vol = player.get_volume(chat_id) + (10 if action == "vol_up" else -10)
         player.set_volume(chat_id, vol)
-        try:
-            await call.change_volume_call(chat_id, player.get_volume(chat_id))
-        except Exception as e:  # noqa: BLE001
-            LOGGER.debug("volume: %s", e)
+        if player.get_volume(chat_id) > 0:
+            player.set_muted(chat_id, False)
+        await _apply_volume(chat_id)
         await player.refresh_panel(chat_id)
         await cq.answer(f"🔊 صدا: {player.get_volume(chat_id)}%")
 
     elif action == "mute":
-        try:
-            await call.change_volume_call(chat_id, 0)
-        except Exception:  # noqa: BLE001
-            pass
-        await cq.answer("🔇 بیصدا شد")
+        new_state = not player.is_muted(chat_id)
+        player.set_muted(chat_id, new_state)
+        await _apply_volume(chat_id)
+        await player.refresh_panel(chat_id)
+        await cq.answer("🔇 بیصدا شد" if new_state else "🔈 صدادار شد")
 
-    elif action == "unmute":
+    # --- ناوبری آهنگ ---
+    elif action == "skip":
+        nxt = await player.skip(chat_id)
+        await cq.answer("⏭ آهنگ بعدی" if nxt else "⏹ صف خالی شد")
+
+    elif action == "prev":
+        prev = await player.previous(chat_id)
+        await cq.answer("⏮ آهنگ قبلی" if prev else "قبلی‌ای وجود ندارد")
+
+    elif action == "playlist":
+        items = list(q.get_queue(chat_id))
+        cur = q.now_playing(chat_id)
+        lines = [f"🎧 در حال پخش: {cur.title}"] if cur else []
+        if items:
+            lines.append("")
+            lines += [f"{i}. {t.title}" for i, t in enumerate(items[:15], 1)]
+        else:
+            lines.append("\nصف بعدی خالی است.")
+        await cq.answer("\n".join(lines)[:200], show_alert=True)
+
+    # --- دریافت رسانه: لینک منبع را می‌فرستد ---
+    elif action == "getmedia":
+        await cq.answer("لینک منبع ارسال شد", show_alert=False)
         try:
-            await call.change_volume_call(chat_id, player.get_volume(chat_id))
-        except Exception:  # noqa: BLE001
-            pass
-        await cq.answer("🔈 صدادار شد")
+            await client.send_message(
+                chat_id,
+                f"📥 **{track.title}**\n{track.webpage_url}",
+                disable_web_page_preview=False,
+            )
+        except Exception as e:  # noqa: BLE001
+            LOGGER.debug("getmedia: %s", e)
 
     elif action == "refresh":
         await player.refresh_panel(chat_id)
         await cq.answer("🔄 بروزرسانی شد")
-
-    elif action in ("fwd30", "fwd60", "back30", "back60"):
-        # پرش زمانی: نیاز به بازپخش استریم از offset دارد (فعلاً اطلاع‌رسانی)
-        await cq.answer("⏩ پرش زمانی در نسخه بعدی فعال می‌شود", show_alert=False)
 
     else:
         await cq.answer()
