@@ -1,7 +1,17 @@
-"""دستورات پخش: /play, /vplay, /pause, /resume, /skip, /stop, /queue."""
+"""دستورات پخش با معادل‌های فارسی چندکلمه‌ای.
+
+نگاشت دستورات (با/بدون پیشوند / . ! ،):
+  پخش اهنگ / پخش آهنگ        → پخش آهنگ
+  پخش فیلم / پخش ویدیو        → پخش ویدیو
+  مکث / توقف                  → مکث
+  ادامه / شروع                → ادامه
+  رد / بعدی / اهنگ بعدی       → آهنگ بعدی
+  خروج / اتمام                → توقف کامل
+  صف / صف پخش / لیست / لیست پخش → نمایش صف
+"""
 import logging
 
-from pyrogram import Client, filters
+from pyrogram import Client
 from pyrogram.types import Message
 
 import config
@@ -9,6 +19,7 @@ from bot import database as db
 from bot import player
 from bot import queue as q
 from bot import youtube
+from bot.facmd import fa_command
 from bot.queue import Track
 
 LOGGER = logging.getLogger("musicbot.play")
@@ -32,8 +43,8 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
     if not query and message.reply_to_message and message.reply_to_message.text:
         query = message.reply_to_message.text.strip()
     if not query:
-        cmd = "/vplay" if is_video else "/play"
-        await message.reply_text(f"نام آهنگ یا لینک را بده.\nمثال: `{cmd} نام آهنگ`")
+        example = "پخش فیلم هزارپا" if is_video else "پخش اهنگ شادمهر"
+        await message.reply_text(f"نام {'فیلم' if is_video else 'آهنگ'} یا لینک را بده.\nمثال: `{example}`")
         return
 
     db.add_chat(message.chat.id)
@@ -87,17 +98,20 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
         )
 
 
-@Client.on_message(filters.command(["play", "پخش"]))
+# --- پخش آهنگ: «پخش اهنگ» / «پخش آهنگ» ---
+@Client.on_message(fa_command(["پخش اهنگ", "پخش آهنگ"]))
 async def play_cmd(client: Client, message: Message):
     await _handle_play(client, message, is_video=False)
 
 
-@Client.on_message(filters.command(["vplay", "ویدیو"]))
+# --- پخش ویدیو: «پخش فیلم» / «پخش ویدیو» ---
+@Client.on_message(fa_command(["پخش فیلم", "پخش ویدیو"]))
 async def vplay_cmd(client: Client, message: Message):
     await _handle_play(client, message, is_video=True)
 
 
-@Client.on_message(filters.command(["pause", "مکث"]))
+# --- مکث: «مکث» / «توقف» ---
+@Client.on_message(fa_command(["مکث", "توقف"]))
 async def pause_cmd(client: Client, message: Message):
     track = q.now_playing(message.chat.id)
     if not track:
@@ -110,7 +124,8 @@ async def pause_cmd(client: Client, message: Message):
     await message.reply_text("⏸ متوقف شد.")
 
 
-@Client.on_message(filters.command(["resume", "ادامه"]))
+# --- ادامه: «ادامه» / «شروع» ---
+@Client.on_message(fa_command(["ادامه", "شروع"]))
 async def resume_cmd(client: Client, message: Message):
     track = q.now_playing(message.chat.id)
     if not track:
@@ -123,7 +138,8 @@ async def resume_cmd(client: Client, message: Message):
     await message.reply_text("▶️ ادامه یافت.")
 
 
-@Client.on_message(filters.command(["skip", "رد", "بعدی"]))
+# --- آهنگ بعدی: «رد» / «بعدی» / «آهنگ بعدی» / «اهنگ بعدی» ---
+@Client.on_message(fa_command(["اهنگ بعدی", "آهنگ بعدی", "بعدی", "رد"]))
 async def skip_cmd(client: Client, message: Message):
     if q.now_playing(message.chat.id) is None:
         await message.reply_text("چیزی در حال پخش نیست.")
@@ -135,7 +151,8 @@ async def skip_cmd(client: Client, message: Message):
         await message.reply_text("⏹ صف خالی شد. از کال خارج شدم.")
 
 
-@Client.on_message(filters.command(["stop", "توقف", "end"]))
+# --- توقف کامل: «خروج» / «اتمام» ---
+@Client.on_message(fa_command(["خروج", "اتمام"]))
 async def stop_cmd(client: Client, message: Message):
     if q.now_playing(message.chat.id) is None:
         await message.reply_text("چیزی در حال پخش نیست.")
@@ -144,7 +161,8 @@ async def stop_cmd(client: Client, message: Message):
     await message.reply_text("⏹ پخش متوقف و از کال خارج شدم.")
 
 
-@Client.on_message(filters.command(["queue", "صف"]))
+# --- صف: «صف» / «صف پخش» / «لیست» / «لیست پخش» ---
+@Client.on_message(fa_command(["صف پخش", "لیست پخش", "صف", "لیست"]))
 async def queue_cmd(client: Client, message: Message):
     cur = q.now_playing(message.chat.id)
     if not cur:

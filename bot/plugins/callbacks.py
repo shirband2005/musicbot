@@ -9,14 +9,29 @@ from bot import call
 from bot import player
 from bot import queue as q
 from bot import youtube
-from bot.plugins.start import HELP_TEXT
+from bot.plugins.start import HELP_NODES, help_markup, help_text
 
 LOGGER = logging.getLogger("musicbot.callbacks")
 
 
-@Client.on_callback_query(filters.regex(r"^help$"))
-async def help_cb(client: Client, cq: CallbackQuery):
-    await cq.message.edit_text(HELP_TEXT)
+# --- ناوبری پنل راهنما: 'h|<node>' ---
+@Client.on_callback_query(filters.regex(r"^h\|"))
+async def help_nav_cb(client: Client, cq: CallbackQuery):
+    node = cq.data.split("|", 1)[1]
+    if node == "close":
+        try:
+            await cq.message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        await cq.answer("بسته شد")
+        return
+    if node not in HELP_NODES:
+        await cq.answer()
+        return
+    try:
+        await cq.message.edit_text(help_text(node), reply_markup=help_markup(node))
+    except Exception:  # noqa: BLE001
+        pass
     await cq.answer()
 
 
