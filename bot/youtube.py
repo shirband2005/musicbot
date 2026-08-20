@@ -200,30 +200,52 @@ def _extract_with_fallback(query: str, video: bool, download: bool = False, out_
     search = query if is_url else f"ytsearch1:{query}"
     fmt = _VIDEO_FMT if video else _AUDIO_FMT
 
-    logs.info("YT: کوکی=%s | پروکسی=%s", has_cookies(), proxies.enabled())
+    use_proxy = proxies.enabled()
+    logs.info("YT: کوکی=%s | پروکسی=%s | مستقیم‌اول=%s",
+              has_cookies(), use_proxy, os.environ.get("PROXY_FIRST", "1"))
 
-    # مرحله ۱: تلاش مستقیم (بدون پروکسی)
+    proxy_first = os.environ.get("PROXY_FIRST", "1").strip().lower() in ("1", "true", "yes")
+
+    # اگر پروکسی فعال است و proxy_first روشن (چون IP ریلوی بلاک است)،
+    # مستقیماً سراغ پروکسی برو و وقت را با تلاش مستقیمِ محکوم‌به‌شکست تلف نکن.
+    if use_proxy and proxy_first:
+        info = _via_proxies(search, fmt, download, out_dir, prior_err=None)
+        if info is not None:
+            return info
+        # اگر همه پروکسی‌ها شکست خوردند، به‌عنوان آخرین شانس مستقیم امتحان کن
+        logs.info("YT: همه پروکسی‌ها ناموفق — تلاش مستقیم به‌عنوان آخرین راه")
+        info, err = _try_clients(search, fmt, _CLIENTS_DIRECT, None, download, out_dir)
+        if info is not None:
+            return info
+        raise err if err else RuntimeError("استخراج ناموفق")
+
+    # حالت پیش‌فرض قدیمی: اول مستقیم، بعد پروکسی
     info, err = _try_clients(search, fmt, _CLIENTS_DIRECT, None, download, out_dir)
     if info is not None:
         return info
 
-    # اگر خطا مربوط به بلاک نیست، پروکسی هم کمکی نمی‌کند
     if err and not _is_block_error(str(err)):
         logs.stage_fail("YT_EXTRACT", err=f"خطای غیربلاکی: {str(err)[:120]}")
         raise err
 
-    # مرحله ۲: چرخش روی استخر پروکسی
-    if not proxies.enabled():
+    if not use_proxy:
         logs.stage_fail("YT_EXTRACT", err="بلاک IP و پروکسی غیرفعال است")
         raise err if err else RuntimeError("بلاک IP")
 
+    info = _via_proxies(search, fmt, download, out_dir, prior_err=err)
+    if info is not None:
+        return info
+    raise err if err else RuntimeError("استخراج ناموفق")
+
+
+def _via_proxies(search: str, fmt: str, download: bool, out_dir: str, prior_err):
+    """چرخش روی استخر پروکسی؛ اولین موفقیت را برمی‌گرداند یا None."""
     proxy_list = proxies.candidates(limit=int(os.environ.get("PROXY_MAX_TRY", "40")))
-    logs.info("YT: سوییچ به پروکسی — %d کاندید", len(proxy_list))
+    logs.info("YT: تلاش با پروکسی — %d کاندید", len(proxy_list))
     if not proxy_list:
         logs.stage_fail("YT_EXTRACT", err="استخر پروکسی خالی است")
-        raise err if err else RuntimeError("پروکسی موجود نیست")
+        return None
 
-    last_err = err
     tried = 0
     for i, proxy in enumerate(proxy_list, 1):
         # پیش‌بررسی سریع: پروکسی مرده را بدون اتلاف وقت رد کن
@@ -237,10 +259,9 @@ def _extract_with_fallback(query: str, video: bool, download: bool = False, out_
             logs.stage_ok("YT_EXTRACT", note=f"موفق با پروکسی #{i}")
             return info
         proxies.mark_bad(proxy)
-        last_err = e or last_err
 
     logs.stage_fail("YT_EXTRACT", err=f"همه پروکسی‌ها ناموفق ({tried} پروکسی زنده امتحان شد)")
-    raise last_err if last_err else RuntimeError("استخراج ناموفق")
+    return None
 
 
 def _extract(query: str, video: bool) -> dict:
