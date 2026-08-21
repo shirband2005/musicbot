@@ -43,7 +43,8 @@ async def _gate(client: Client, message: Message) -> bool:
         return False
     # ۱) اول: آیا گروه فعال است؟ (خاموش → «گروه دسترسی ندارد»)
     if not gc.is_enabled(message.chat.id):
-        await message.reply_text(auth.DENY_GROUP, reply_markup=auth.support_kb())
+        url = await auth.resolve_support_url(client)
+        await message.reply_text(auth.DENY_GROUP, reply_markup=auth.support_kb(url))
         return False
     # ۲) سپس: آیا این کاربر دسترسی دارد؟ (نه → «شما دسترسی ندارید»)
     if not await auth.guard_message(client, message):

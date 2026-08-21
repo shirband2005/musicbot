@@ -63,6 +63,13 @@ async def main():
     logs.stage_ok("BOOT")
     # بارگذاری file_idهای کش‌شده‌ی کاور (تا از آپلود مجدد جلوگیری شود)
     player._load_cover_fids()
+    # یوزرنیم مالک را برای دکمه پشتیبانی از پیش حل کن
+    try:
+        from bot import auth
+        url = await auth.resolve_support_url(app)
+        logs.info("لینک پشتیبانی: %s", url)
+    except Exception as e:  # noqa: BLE001
+        logs.warn("resolve support url: %s", e)
     logs.info("🎵 ربات آماده است.")
 
     await idle()

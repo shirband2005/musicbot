@@ -19,13 +19,35 @@ LOGGER = logging.getLogger("musicbot.auth")
 
 OWNER_ID = 8406519786  # سازنده/مالک ربات (= پشتیبانی)
 
-# دکمه ارتباط با پشتیبانی (پروفایل مالک؛ با کلیک باز می‌شود و می‌توانند پیام بدهند)
-SUPPORT_URL = f"tg://user?id={OWNER_ID}"
+# لینک پشتیبانی به‌صورت پویا از روی آیدی عددی مالک ساخته می‌شود:
+# اگر مالک یوزرنیم عمومی داشته باشد → https://t.me/<username> (در دکمه قطعی کار می‌کند)
+# در غیر این صورت → tg://user?id=<OWNER_ID> (fallback)
+import time as _time
+_support_cache = {"url": f"tg://user?id={OWNER_ID}", "ts": 0.0}
+_SUPPORT_TTL = 600  # هر ۱۰ دقیقه یک‌بار یوزرنیم را دوباره بررسی کن
 
 
-def support_kb() -> InlineKeyboardMarkup:
+async def resolve_support_url(client: Client) -> str:
+    """یوزرنیم فعلی مالک را از آیدی عددی می‌گیرد و لینک پشتیبانی را کش می‌کند."""
+    now = _time.time()
+    if now - _support_cache["ts"] < _SUPPORT_TTL:
+        return _support_cache["url"]
+    url = f"tg://user?id={OWNER_ID}"
+    try:
+        chat = await client.get_chat(OWNER_ID)
+        if getattr(chat, "username", None):
+            url = f"https://t.me/{chat.username}"
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("resolve support url: %s", e)
+    _support_cache["url"] = url
+    _support_cache["ts"] = now
+    return url
+
+
+def support_kb(url: str | None = None) -> InlineKeyboardMarkup:
+    link = url or _support_cache["url"]
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("💬 ارتباط با پشتیبانی", url=SUPPORT_URL,
+        [[InlineKeyboardButton("💬 ارتباط با پشتیبانی", url=link,
                                 style=enums.ButtonStyle.PRIMARY)]]
     )
 
@@ -86,7 +108,8 @@ async def guard_message(client: Client, message: Message) -> bool:
         return True
     # کاربر مجاز نیست → پیام «شما دسترسی ندارید» + دکمه پشتیبانی
     try:
-        await message.reply_text(DENY_USER, reply_markup=support_kb())
+        url = await resolve_support_url(client)
+        await message.reply_text(DENY_USER, reply_markup=support_kb(url))
     except Exception:  # noqa: BLE001
         pass
     return False
