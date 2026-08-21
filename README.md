@@ -35,7 +35,7 @@
 
 ## 🚀 دیپلوی سریع روی Railway (یک‌کلیک)
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/shirband2005/musicbot)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/LVaJbr?referralCode=8yPcL8&utm_medium=integration&utm_source=template&utm_campaign=generic)
 
 1. روی دکمه بالا بزن → به Railway می‌روی.
 2. یک Volume به مسیر `/data` وصل کن (تا دیتابیس پایدار بماند).
