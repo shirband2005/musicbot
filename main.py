@@ -2,6 +2,11 @@
 import asyncio
 import logging
 
+# بازیابی متغیرهای محیطی از RESTORE_BLOB (اگر تنظیم شده) — باید قبل از هر import
+# از bot/ و config اجرا شود، چون config مقادیر را هنگام import می‌خواند.
+import bootstrap
+bootstrap.apply()
+
 from pyrogram import idle
 from pytgcalls.types import StreamEnded
 
@@ -66,6 +71,13 @@ async def main():
         )
 
     logs.stage_ok("BOOT")
+    # بازیابی خودکار دیتابیس از کانال لاگ (برای سرور جدید — اگر دیتابیس خالی باشد)
+    try:
+        from bot import channel
+        if await channel.restore_db_from_channel():
+            logs.info("♻️ دیتابیس از کانال لاگ بازیابی شد (سرور جدید).")
+    except Exception as e:  # noqa: BLE001
+        logs.warn("restore db: %s", e)
     # بارگذاری file_idهای کش‌شده‌ی کاور (تا از آپلود مجدد جلوگیری شود)
     player._load_cover_fids()
     # پاک‌سازی فایل‌های یتیم پوشه دانلود (جلوگیری از پر شدن Volume)
@@ -111,9 +123,7 @@ async def main():
             f"• گروه‌های ثبت‌شده: {n_chats}\n"
             f"• آهنگ‌های آرشیو: {_db.archive_count()}"
         )
-        await channel.backup_db(force=True)
-        await channel.backup_env()
-        # زمان‌بند بکاپ شبانه (هر شب ۰۰:۰۰ به وقت تهران)
+        # بکاپ فقط شبانه ساعت ۱۲ تهران فرستاده می‌شود (نه در هر بوت)
         asyncio.create_task(channel.nightly_backup_loop())
     except Exception as e:  # noqa: BLE001
         logs.warn("startup channel log: %s", e)

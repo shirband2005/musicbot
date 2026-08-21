@@ -139,7 +139,7 @@ async def backup_db(force: bool = False) -> None:
         LOGGER.warning("db backup failed: %s", e)
 
 
-# ---------------- بکاپ رمزنگاری‌شده‌ی env (برای انتقال کامل سرور) ----------------
+# ---------------- بکاپ خودکفای env (برای انتقال کامل سرور) ----------------
 # متغیرهای حساسی که برای راه‌اندازی ربات روی سرور جدید لازم‌اند
 _ENV_KEYS = [
     "API_ID", "API_HASH", "BOT_TOKEN", "STRING_SESSION", "OWNER_ID",
@@ -148,59 +148,41 @@ _ENV_KEYS = [
     "DB_PATH", "COVER_PATH", "USE_SOUNDCLOUD", "SC_TIMEOUT",
     "DURATION_LIMIT", "CACHE_KEEP", "MP3_QUALITY", "AUDIO_FORMAT",
     "VIDEO_FORMAT", "USE_FREE_PROXIES", "PROXY_MAX_TRY", "PROXY_TIMEOUT",
-    "ATTEMPT_HARD_TIMEOUT", "BACKUP_KEY",
+    "ATTEMPT_HARD_TIMEOUT",
 ]
 
 
-def _fernet():
-    """کلید رمزنگاری از BACKUP_KEY می‌سازد (Fernet). None اگر کتابخانه/کلید نباشد."""
-    key = os.environ.get("BACKUP_KEY", "").strip()
-    if not key:
-        return None
-    try:
-        import base64
-        import hashlib
-        from cryptography.fernet import Fernet
-        # هر رشته‌ای را به کلید ۳۲بایتی معتبر Fernet تبدیل کن
-        digest = hashlib.sha256(key.encode()).digest()
-        return Fernet(base64.urlsafe_b64encode(digest))
-    except Exception as e:  # noqa: BLE001
-        LOGGER.warning("fernet init failed: %s", e)
-        return None
-
-
 async def backup_env() -> None:
-    """متغیرهای env حساس را رمزنگاری و به کانال لاگ می‌فرستد.
+    """رشته‌ی خودکفای رمزنگاری‌شده‌ی همه‌ی env را به کانال لاگ می‌فرستد.
 
-    نیاز به BACKUP_KEY (رمز دلخواه) دارد؛ بدون آن هیچ چیزی فرستاده نمی‌شود
-    (تا توکن‌ها لخت لو نروند). برای بازیابی: فایل .env.bak را با همان کلید
-    رمزگشایی کن (اسکریپت restore_env.py).
+    این تک‌رشته (RESTORE_BLOB) شامل کلید رمز + داده است، پس برای بازیابی کامل
+    روی سرور جدید فقط همین یک رشته کافی است: آن را در فیلد RESTORE_BLOB بگذار.
     """
     if not config.LOG_CHANNEL:
         return
-    f = _fernet()
-    if f is None:
-        LOGGER.info("env backup skipped (BACKUP_KEY تنظیم نشده)")
-        return
     try:
-        import json
+        import bootstrap
+        data = {k: os.environ.get(k, "") for k in _ENV_KEYS
+                if os.environ.get(k, "") and k != "RESTORE_BLOB"}
+        blob = bootstrap._make_blob(data)
+        # به‌صورت فایل متنی (چون ممکن است طولانی باشد و در پیام معمولی جا نشود)
         import tempfile
-        data = {k: os.environ.get(k, "") for k in _ENV_KEYS if os.environ.get(k, "")}
-        blob = f.encrypt(json.dumps(data, ensure_ascii=False).encode())
-        tmp = os.path.join(tempfile.gettempdir(), "env.bak")
-        with open(tmp, "wb") as fh:
+        tmp = os.path.join(tempfile.gettempdir(), "restore_blob.txt")
+        with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(blob)
         await app.send_document(
             config.LOG_CHANNEL, tmp,
-            caption="🔐 بکاپ رمزنگاری‌شده‌ی تنظیمات (env)\n"
-                    "برای بازیابی: `python restore_env.py env.bak` با همان BACKUP_KEY.",
-            file_name="env.bak",
+            caption="🔐 **رشته‌ی بازیابی کامل (RESTORE_BLOB)**\n"
+                    "برای انتقال به سرور جدید: محتوای این فایل را در فیلد "
+                    "`RESTORE_BLOB` هنگام دیپلوی بگذار. همه‌ی توکن‌ها و تنظیمات "
+                    "خودکار ساخته می‌شوند. (این رشته را محرمانه نگه دار.)",
+            file_name="restore_blob.txt",
         )
         try:
             os.remove(tmp)
         except OSError:
             pass
-        LOGGER.info("ENV BACKUP sent (encrypted)")
+        LOGGER.info("ENV BACKUP sent (self-contained blob)")
     except Exception as e:  # noqa: BLE001
         LOGGER.warning("env backup failed: %s", e)
 
@@ -228,3 +210,37 @@ async def nightly_backup_loop() -> None:
             await backup_env()
         except Exception as e:  # noqa: BLE001
             LOGGER.warning("nightly backup: %s", e)
+
+
+async def restore_db_from_channel() -> bool:
+    """اگر دیتابیس محلی خالی/تازه باشد، آخرین بکاپ را از کانال لاگ بازیابی می‌کند.
+
+    برای سرور جدید: پس از دیپلوی، ربات با BOT_TOKEN وصل می‌شود، آخرین فایل
+    musicbot.db را در کانال لاگ می‌یابد، دانلود و جایگزین می‌کند.
+    خروجی: True اگر بازیابی انجام شد.
+    """
+    if not config.LOG_CHANNEL:
+        return False
+    # فقط وقتی دیتابیس واقعاً خالی است (سرور تازه) — از بازنویسی داده‌ی موجود جلوگیری کن
+    try:
+        if db.get_chats() or db.archive_count() > 0 or db.list_special():
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        # جدیدترین سند musicbot.db را در تاریخچه کانال پیدا کن
+        async for msg in app.get_chat_history(config.LOG_CHANNEL, limit=100):
+            doc = getattr(msg, "document", None)
+            if doc and (doc.file_name or "").endswith(".db"):
+                tmp = config.DB_PATH + ".restore"
+                await msg.download(file_name=tmp)
+                if os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
+                    # اتصال دیتابیس را ببند و فایل را جایگزین کن
+                    db.close()
+                    os.replace(tmp, config.DB_PATH)
+                    LOGGER.info("DB RESTORED from channel (%s)", doc.file_name)
+                    return True
+        LOGGER.info("no db backup found in channel to restore")
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("restore db from channel: %s", e)
+    return False

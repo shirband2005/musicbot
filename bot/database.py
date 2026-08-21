@@ -23,6 +23,18 @@ def _connect() -> sqlite3.Connection:
     return _conn
 
 
+def close() -> None:
+    """اتصال دیتابیس را می‌بندد (برای جایگزینی فایل هنگام بازیابی از کانال)."""
+    global _conn
+    with _lock:
+        if _conn is not None:
+            try:
+                _conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            _conn = None
+
+
 def _init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """

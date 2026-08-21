@@ -291,3 +291,29 @@ def test_migration_from_settings(tmp_path, monkeypatch):
     assert g["enabled"] == 1
     assert g["lock"] == "youtube"
     assert g["platform"] == "soundcloud"
+
+
+# ---------------- bootstrap: RESTORE_BLOB خودکفا ----------------
+def test_restore_blob_roundtrip_and_apply(monkeypatch):
+    import bootstrap
+    data = {"BOT_TOKEN": "tok_abc", "OWNER_ID": "8406519786", "PROXY_LIST": "1.2.3.4:80:u:p"}
+    blob = bootstrap._make_blob(data)
+    assert "." in blob  # کلید.توکن
+    assert bootstrap._read_blob(blob) == data
+
+    # apply فقط متغیرهای غایب را می‌گذارد و متغیرهای موجود را override نمی‌کند
+    monkeypatch.setenv("RESTORE_BLOB", blob)
+    monkeypatch.delenv("BOT_TOKEN", raising=False)
+    monkeypatch.setenv("OWNER_ID", "999")  # از قبل ست → نباید عوض شود
+    assert bootstrap.apply() is True
+    import os
+    assert os.environ["BOT_TOKEN"] == "tok_abc"      # غایب بود → بازیابی شد
+    assert os.environ["OWNER_ID"] == "999"           # موجود بود → حفظ شد
+    assert os.environ["PROXY_LIST"] == "1.2.3.4:80:u:p"
+
+
+def test_restore_blob_invalid_is_safe(monkeypatch):
+    import bootstrap
+    monkeypatch.setenv("RESTORE_BLOB", "garbage-not-a-valid-blob")
+    # نباید استثنا بدهد؛ فقط False برگرداند
+    assert bootstrap.apply() is False
