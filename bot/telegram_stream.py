@@ -96,14 +96,17 @@ async def build_stream(chat_id: int, message) -> Stream:
     # نکته مهم: به هر پروسه فقط استریم لازمش را می‌دهیم:
     #  - صدا: -vn (بدون decode ویدیوی سنگین x265) → صدا عقب نمی‌ماند
     #  - تصویر: -an (بدون decode صدا)
+    # stderr هر پروسه در فایل لاگ ذخیره می‌شود (برای دیباگ نبود صدا/تصویر).
     common = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2"
+    vlog = f"/tmp/tgv_{chat_id}.log"
+    alog = f"/tmp/tga_{chat_id}.log"
     vcmd = (
-        f"ffmpeg {common} -i {url} -an -v quiet "
-        f"-map 0:v:0? -f rawvideo -r 20 -pix_fmt yuv420p -vf scale=640:360 pipe:1"
+        f"ffmpeg {common} -i {url} -an -v error "
+        f"-map 0:v:0? -f rawvideo -r 20 -pix_fmt yuv420p -vf scale=640:360 pipe:1 2>{vlog}"
     )
     acmd = (
-        f"ffmpeg {common} -i {url} -vn -v quiet "
-        f"-map 0:a:0? -f s16le -ac 2 -ar 48000 pipe:1"
+        f"ffmpeg {common} -i {url} -vn -v error "
+        f"-map 0:a:0? -f s16le -ac 2 -ar 48000 pipe:1 2>{alog}"
     )
     audio = AudioStream(MediaSource.SHELL, acmd, AudioParameters(48000, 2))
     video = VideoStream(MediaSource.SHELL, vcmd, VideoParameters(640, 360, 20))
