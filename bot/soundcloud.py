@@ -106,7 +106,7 @@ def _download_sync(query: str, out_dir: str) -> dict:
         "outtmpl": os.path.join(out_dir, "sc_%(id)s.%(ext)s"),
         "postprocessors": [
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3",
-             "preferredquality": os.environ.get("MP3_QUALITY", "96")},
+             "preferredquality": os.environ.get("SC_MP3_QUALITY", "320")},
         ],
     }
     with yt_dlp.YoutubeDL(opts) as ydl:

@@ -123,6 +123,26 @@ async def _ensure_local_file(track: Track) -> bool:
     if track.source == "telegram_stream":
         return bool(track.tg_chat_id and track.tg_msg_id)
 
+    # منبع آرشیو: رکورد آماده در info.archive_rec است → مستقیم از کانال دانلود
+    if track.source == "archive":
+        if track.local_path and os.path.isfile(track.local_path):
+            return True
+        try:
+            from bot import channel
+            rec = getattr(track, "_archive_rec", None)
+            if rec is None:
+                rec = channel.archive_lookup(video_id=track.video_id,
+                                             query=(track.query or track.title))
+            if rec:
+                path = await channel.archive_download(rec, DOWNLOAD_DIR)
+                if path and os.path.isfile(path):
+                    track.local_path = path
+                    logs.info("ARCHIVE HIT | %s (از کانال، بدون دانلود)", track.title)
+                    return True
+        except Exception as e:  # noqa: BLE001
+            logs.debug("archive source: %s", e)
+        return False
+
     # ساوندکلاد مستقیم استریم می‌شود (IP دیتاسنتر بلاک نیست)
     if track.source == "soundcloud":
         # ۰) اگر همین آهنگ قبلاً در آرشیو کانال هست → از تلگرام بگیر و از فایل پخش کن

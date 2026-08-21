@@ -310,6 +310,31 @@ async def get_media(query: str, video: bool = False) -> dict:
     return await loop.run_in_executor(None, _extract, query, video)
 
 
+def _search_title_sync(query: str) -> dict:
+    """فقط جست‌وجوی سبک: عنوان دقیق + video_id بدون گرفتن لینک استریم/دانلود.
+
+    برای مرحله‌ی «اول اسم دقیق را از یوتیوب بگیر» استفاده می‌شود. سبک است چون
+    download=False و فقط متادیتای اولین نتیجه گرفته می‌شود.
+    """
+    info = _extract_with_fallback(query, video=False, download=False)
+    return {
+        "id": info.get("id", ""),
+        "title": info.get("title", ""),
+        "uploader": info.get("uploader", ""),
+        "duration": info.get("duration") or 0,
+    }
+
+
+async def search_title(query: str) -> dict:
+    """عنوان دقیق و video_id آهنگ را از یوتیوب می‌گیرد (سبک، بدون دانلود)."""
+    loop = asyncio.get_event_loop()
+    try:
+        return await loop.run_in_executor(None, _search_title_sync, query)
+    except Exception as e:  # noqa: BLE001
+        logs.debug("yt search_title: %s", e)
+        return {}
+
+
 async def download_audio(query: str, out_dir: str = "downloads") -> dict:
     os.makedirs(out_dir, exist_ok=True)
     loop = asyncio.get_event_loop()

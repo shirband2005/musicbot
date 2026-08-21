@@ -86,6 +86,9 @@ async def _play_track(client: Client, message: Message, info: dict, is_video: bo
         video_id=info.get("id") or "",
         source=source,
     )
+    # اگر منبع آرشیو است، رکورد آماده را به track بده تا دوباره جست‌وجو نشود
+    if source == "archive" and info.get("archive_rec"):
+        track._archive_rec = info["archive_rec"]
 
     try:
         with logs.stage("CALL_PLAY", message.chat.id, title=track.title, video=is_video):
@@ -123,31 +126,81 @@ async def _play_track(client: Client, message: Message, info: dict, is_video: bo
 
 
 async def _search(chat_id: int, query: str, is_video: bool, status):
-    """جست‌وجو طبق ترجیح پلتفرم (با اعمال قفل گروه). info یا None."""
-    info = None
-    mode = platform_pref.effective(chat_id)  # both | youtube | soundcloud (با قفل)
+    """جست‌وجوی هوشمند طبق ترجیح پلتفرم (با اعمال قفل گروه). info یا None.
 
-    if not is_video and mode in (platform_pref.BOTH, platform_pref.SOUNDCLOUD):
+    منطق (فقط برای صوت؛ ویدیو مستقیم یوتیوب):
+    - both: یوتیوب اسمِ دقیق → آرشیو با video_id/اسم → ساوندکلاد با اسم دقیق →
+            ساوندکلاد با دستور اصلی → یوتیوب دانلود (کیفیت پایین)
+    - youtube: یوتیوب اسمِ دقیق → آرشیو → ساوندکلاد با اسم دقیق → یوتیوب دانلود
+    - soundcloud: مستقیم ساوندکلاد با دستور اصلی
+    آرشیو در _ensure_local_file هنگام پخش هم دوباره چک می‌شود؛ اینجا سریع‌ترین
+    منبع را انتخاب می‌کنیم.
+    """
+    from bot import channel
+    mode = platform_pref.effective(chat_id)
+
+    # ویدیو: فقط یوتیوب
+    if is_video:
         try:
-            sc = await soundcloud.search(query)
-            if sc and sc.get("stream_url"):
-                info = sc
+            return await youtube.get_media(query, video=True)
         except Exception as e:  # noqa: BLE001
-            LOGGER.debug("soundcloud search: %s", e)
-
-    if info is None and mode == platform_pref.SOUNDCLOUD and not is_video:
-        await status.edit_text("❌ در ساوند کلاد پیدا نشد.")
-        return None
-
-    if info is None:
-        try:
-            info = await youtube.get_media(query, video=is_video)
-        except Exception as e:  # noqa: BLE001
-            LOGGER.warning("youtube error: %s", e)
+            LOGGER.warning("youtube video error: %s", e)
             friendly = logs.classify_youtube_error(str(e))
             await status.edit_text(f"❌ {friendly}\n\n`{str(e)[:300]}`")
             return None
-    return info
+
+    # فقط ساوندکلاد: مستقیم همان دستور
+    if mode == platform_pref.SOUNDCLOUD:
+        sc = await soundcloud.search(query)
+        if sc and sc.get("stream_url"):
+            return sc
+        await status.edit_text("❌ در ساوند کلاد پیدا نشد.")
+        return None
+
+    # both یا youtube: اول اسم دقیق را از یوتیوب بگیر (سبک، بدون دانلود)
+    exact_title = ""
+    yt_vid = ""
+    try:
+        meta = await youtube.search_title(query)
+        exact_title = (meta.get("title") or "").strip()
+        yt_vid = meta.get("id") or ""
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("yt title: %s", e)
+
+    # چک آرشیو با video_id یا اسم دقیق (اگر بود، پخش از تلگرام بدون دانلود)
+    if exact_title or yt_vid:
+        try:
+            rec = channel.archive_lookup(video_id=yt_vid, query=(exact_title or query))
+            if rec:
+                await status.edit_text(f"⚡️ از آرشیو: {rec.get('title') or exact_title}")
+                return {
+                    "id": yt_vid or ("q:" + (exact_title or query)),
+                    "title": rec.get("title") or exact_title or query,
+                    "duration": rec.get("duration") or 0,
+                    "duration_text": _fmt_dur(int(rec.get("duration") or 0)),
+                    "stream_url": "archive", "webpage_url": "",
+                    "thumbnail": None, "source": "archive",
+                    "archive_rec": rec,
+                }
+        except Exception as e:  # noqa: BLE001
+            LOGGER.debug("archive lookup: %s", e)
+
+    # ساوندکلاد با اسم دقیق، بعد با دستور اصلی
+    sc_queries = [exact_title, query] if exact_title and exact_title != query else [query]
+    for scq in sc_queries:
+        sc = await soundcloud.search(scq)
+        if sc and sc.get("stream_url"):
+            return sc
+
+    # حالت only-youtube یا هر دو: در نهایت یوتیوب (دانلود با کیفیت پایین)
+    try:
+        info = await youtube.get_media(query, video=False)
+        return info
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("youtube error: %s", e)
+        friendly = logs.classify_youtube_error(str(e))
+        await status.edit_text(f"❌ {friendly}\n\n`{str(e)[:300]}`")
+        return None
 
 
 async def _handle_play(client: Client, message: Message, is_video: bool):
