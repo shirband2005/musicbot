@@ -327,8 +327,31 @@ def _cleanup_orphans() -> None:
         LOGGER.debug("cleanup orphans: %s", e)
 
 
+def _source_ready(track: Track) -> bool:
+    """آیا منبع پخش واقعاً آماده است؟ (فایل موجود یا لینک استریم معتبر)
+
+    از کرش FileNotFoundError در call.play جلوگیری می‌کند (مثلاً track قدیمی
+    از صف ذخیره‌شده که فایلش پاک شده).
+    """
+    if track.source == "telegram_stream":
+        # منبع یک FIFO است که feeder پرش می‌کند؛ وجود مسیر کافی است
+        return bool(track.local_path and os.path.exists(track.local_path))
+    if track.local_path:
+        return os.path.isfile(track.local_path)
+    return bool(track.stream_url)
+
+
 async def start_playback(chat_id: int, track: Track) -> None:
-    await _ensure_local_file(track)
+    ok = await _ensure_local_file(track)
+    if not ok or not _source_ready(track):
+        logs.warn("PLAY SKIP | منبع آماده نیست: %s", track.title)
+        # به‌جای کرش، به آهنگ بعدی برو
+        nxt = q.pop_next(chat_id)
+        if nxt is not None:
+            await start_playback(chat_id, nxt)
+        else:
+            await stop(chat_id)
+        return
     q.set_now_playing(chat_id, track)
     await call.play(chat_id, _stream(track))
     await _send_panel(chat_id, new=True)
@@ -350,7 +373,16 @@ async def resume_after_restart(chat_id: int, track: Track) -> None:
     try:
         # زمان‌بندی نوار پیشرفت را از نو شروع کن (started_at ذخیره‌شده منقضی است)
         track.mark_started()
-        await _ensure_local_file(track)
+        # استریم زنده‌ی تلگرام پس از ری‌استارت قابل ادامه نیست (FIFO از بین رفته)
+        if track.source == "telegram_stream":
+            LOGGER.info("resume: رد استریم تلگرام (نیاز به ریپلای دوباره): %s", track.title)
+            q.clear(chat_id)
+            return
+        ok = await _ensure_local_file(track)
+        if not ok or not _source_ready(track):
+            LOGGER.info("resume: منبع آماده نیست، صف پاک شد: %s", track.title)
+            q.clear(chat_id)
+            return
         await call.play(chat_id, _stream(track))
         await _send_panel(chat_id, new=True)
     except Exception as e:  # noqa: BLE001
@@ -364,7 +396,10 @@ async def skip(chat_id: int) -> Optional[Track]:
     if nxt is None:
         await stop(chat_id)
         return None
-    await _ensure_local_file(nxt)
+    ok = await _ensure_local_file(nxt)
+    if not ok or not _source_ready(nxt):
+        logs.warn("SKIP SKIP | منبع آماده نیست: %s → بعدی", nxt.title)
+        return await skip(chat_id)
     await call.play(chat_id, _stream(nxt))
     await _send_panel(chat_id, new=True)
     return nxt
@@ -375,7 +410,10 @@ async def previous(chat_id: int) -> Optional[Track]:
     prev = q.pop_previous(chat_id)
     if prev is None:
         return None
-    await _ensure_local_file(prev)
+    ok = await _ensure_local_file(prev)
+    if not ok or not _source_ready(prev):
+        logs.warn("PREV SKIP | منبع آماده نیست: %s", prev.title)
+        return None
     await call.play(chat_id, _stream(prev))
     await _send_panel(chat_id, new=True)
     return prev
