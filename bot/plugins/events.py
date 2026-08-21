@@ -1,13 +1,29 @@
-"""لاگ رویدادهای عضویت: افزوده/حذف شدن ربات از گروه‌ها → کانال لاگ."""
+"""لاگ رویدادهای عضویت + ثبت آهنگ‌های فوروارد‌شده به کانال آرشیو."""
 import logging
 
-from pyrogram import Client
-from pyrogram.types import ChatMemberUpdated
+from pyrogram import Client, filters
+from pyrogram.types import ChatMemberUpdated, Message
 
+import config
 from bot import channel
 from bot import database as db
 
 LOGGER = logging.getLogger("musicbot.events")
+
+
+@Client.on_message(filters.audio & filters.channel)
+async def _on_archive_audio(client: Client, message: Message):
+    """هر آهنگ صوتی که در کانال آرشیو فوروارد/آپلود شود → ثبت در دیتابیس.
+
+    این‌طور آهنگ‌های فوروارد‌شده در جست‌وجو و پخش رندوم هم در دسترس می‌شوند.
+    """
+    try:
+        if not config.ARCHIVE_CHANNEL:
+            return
+        if message.chat and message.chat.id == config.ARCHIVE_CHANNEL:
+            await channel.store_forwarded(message)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("archive audio store: %s", e)
 
 
 @Client.on_chat_member_updated()

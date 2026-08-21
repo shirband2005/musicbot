@@ -138,14 +138,30 @@ async def panel_cb(client: Client, cq: CallbackQuery):
         await player.refresh_panel(chat_id)
         await cq.answer("🔇 بیصدا شد" if new_state else "🔈 صدادار شد")
 
-    # --- ناوبری آهنگ ---
+    # --- ناوبری آهنگ (با توجه به حالت پخش) ---
     elif action == "skip":
-        nxt = await player.skip(chat_id)
-        await cq.answer("⏭ آهنگ بعدی" if nxt else "⏹ صف خالی شد")
+        from bot import group_config as gc
+        m = gc.get_mode(chat_id)
+        if m == gc.MODE_REPEAT:
+            await player.repeat_current(chat_id)
+            await cq.answer("🔂 تکرار همان آهنگ")
+        elif m == gc.MODE_RANDOM:
+            await player.play_random(chat_id)
+            await cq.answer("🔀 آهنگ رندوم بعدی")
+        else:
+            nxt = await player.skip(chat_id)
+            await cq.answer("⏭ آهنگ بعدی" if nxt else "⏹ صف خالی شد")
 
     elif action == "prev":
-        prev = await player.previous(chat_id)
-        await cq.answer("⏮ آهنگ قبلی" if prev else "قبلی‌ای وجود ندارد")
+        from bot import group_config as gc
+        m = gc.get_mode(chat_id)
+        if m == gc.MODE_REPEAT:
+            await player.repeat_current(chat_id)
+            await cq.answer("🔂 تکرار همان آهنگ")
+        else:
+            # در حالت رندوم و صف، «قبلی» همان آهنگ قبلیِ تاریخچه را پخش می‌کند
+            prev = await player.previous(chat_id)
+            await cq.answer("⏮ آهنگ قبلی" if prev else "قبلی‌ای وجود ندارد")
 
     elif action == "playlist":
         items = list(q.get_queue(chat_id))

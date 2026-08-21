@@ -87,7 +87,6 @@ async def archive_download(rec: dict, out_dir: str) -> str:
     """
     os.makedirs(out_dir, exist_ok=True)
     try:
-        # دانلود با file_id مستقیم
         path = await app.download_media(
             rec["file_id"],
             file_name=os.path.join(out_dir, f"arch_{rec['key'].replace(':', '_')}"),
@@ -108,6 +107,28 @@ async def archive_download(rec: dict, out_dir: str) -> str:
         except Exception as e2:  # noqa: BLE001
             LOGGER.warning("archive download by message_id failed: %s", e2)
     return ""
+
+
+async def store_forwarded(message) -> bool:
+    """آهنگ فوروارد/آپلودشده در خودِ کانال آرشیو را در دیتابیس ثبت می‌کند.
+
+    وقتی مالک یک فایل صوتی را به کانال آرشیو فوروارد/آپلود می‌کند، این تابع
+    file_id و عنوان را در channel_songs ذخیره می‌کند تا در جست‌وجو و پخش رندوم
+    استفاده شود. کلید بر اساس عنوان نرمال‌شده است.
+    """
+    audio = getattr(message, "audio", None)
+    if not audio:
+        return False
+    title = audio.title or audio.file_name or "نامشخص"
+    if audio.performer and audio.title:
+        title = f"{audio.performer} - {audio.title}"
+    key = _norm_key("", title)
+    if db.archive_get(key):
+        return False  # قبلاً ثبت شده
+    db.archive_put(key, audio.file_id, message.id, title,
+                   int(audio.duration or 0), False)
+    LOGGER.info("ARCHIVE FORWARD | %s (key=%s)", title, key)
+    return True
 
 
 # ---------------- بکاپ دیتابیس ----------------

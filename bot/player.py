@@ -392,7 +392,8 @@ async def skip(chat_id: int) -> Optional[Track]:
     _stop_tg_stream(chat_id)
     nxt = q.pop_next(chat_id)
     if nxt is None:
-        await stop(chat_id)
+        # صف خالی — از کال خارج شو ولی تاریخچه را نگه دار تا «آهنگ قبلی» کار کند
+        await end_playback(chat_id)
         return None
     ok = await _ensure_local_file(nxt)
     if not ok or not _source_ready(nxt):
@@ -482,6 +483,21 @@ async def stop(chat_id: int) -> None:
     q.clear(chat_id)
     _cancel_updater(chat_id)
     _muted.pop(chat_id, None)
+    await _delete_panel(chat_id)
+    try:
+        await call.leave_call(chat_id)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("leave_call: %s", e)
+
+
+async def end_playback(chat_id: int) -> None:
+    """پایان طبیعی صف: از کال خارج شو و پنل را بردار، اما تاریخچه را نگه دار
+    تا «آهنگ قبلی» هنوز کار کند (برخلاف stop که همه‌چیز را پاک می‌کند)."""
+    _stop_tg_stream(chat_id)
+    q.end_current(chat_id)
+    _cancel_updater(chat_id)
+    _muted.pop(chat_id, None)
+    await _delete_panel(chat_id)
     try:
         await call.leave_call(chat_id)
     except Exception as e:  # noqa: BLE001

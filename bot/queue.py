@@ -175,6 +175,19 @@ def clear(chat_id: int) -> None:
         pass
 
 
+def end_current(chat_id: int) -> None:
+    """پایان پخش: آهنگ فعلی به تاریخچه می‌رود و صف پاک می‌شود، اما تاریخچه
+    نگه داشته می‌شود تا «آهنگ قبلی» بعد از پایان صف هم کار کند."""
+    cur = _now_playing.pop(chat_id, None)
+    if cur is not None:
+        _history.setdefault(chat_id, []).append(cur)
+    _queues.pop(chat_id, None)
+    try:
+        db.queue_clear(chat_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def progress_bar(position: int, duration: int, length: int = 12) -> str:
     def fmt(sec: int) -> str:
         sec = int(sec)
