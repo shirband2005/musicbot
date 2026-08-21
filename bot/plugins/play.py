@@ -15,6 +15,7 @@ from pyrogram import Client
 from pyrogram.types import Message
 
 import config
+from bot import auth
 from bot import database as db
 from bot import logs
 from bot import platform_pref
@@ -37,49 +38,8 @@ def _requester_name(message: Message) -> str:
     return u.first_name or (u.username and "@" + u.username) or str(u.id)
 
 
-async def _handle_play(client: Client, message: Message, is_video: bool):
-    if message.chat.type.name == "PRIVATE":
-        await message.reply_text(GROUP_ONLY)
-        return
-
-    query = " ".join(message.command[1:]).strip()
-    if not query and message.reply_to_message and message.reply_to_message.text:
-        query = message.reply_to_message.text.strip()
-    if not query:
-        example = "پخش فیلم هزارپا" if is_video else "پخش اهنگ شادمهر"
-        await message.reply_text(f"نام {'فیلم' if is_video else 'آهنگ'} یا لینک را بده.\nمثال: `{example}`")
-        return
-
-    db.add_chat(message.chat.id)
-    status = await message.reply_text("🔎 در حال جست‌وجو...")
-
-    info = None
-    mode = platform_pref.get(message.chat.id)  # both | youtube | soundcloud
-
-    # ۱) ساوندکلاد (اگر حالت both یا soundcloud و آهنگ است نه ویدیو)
-    if not is_video and mode in (platform_pref.BOTH, platform_pref.SOUNDCLOUD):
-        try:
-            sc = await soundcloud.search(query)
-            if sc and sc.get("stream_url"):
-                info = sc
-        except Exception as e:  # noqa: BLE001
-            LOGGER.debug("soundcloud search: %s", e)
-
-    # اگر فقط ساوندکلاد خواسته شده و پیدا نشد → خطا (نرو یوتیوب)
-    if info is None and mode == platform_pref.SOUNDCLOUD and not is_video:
-        await status.edit_text("❌ در ساوند کلاد پیدا نشد.\n(می‌توانی پلتفرم را از پنل به یوتیوب تغییر دهی.)")
-        return
-
-    # ۲) یوتیوب (حالت both در صورت نبود ساوندکلاد، یا حالت youtube، یا ویدیو)
-    if info is None:
-        try:
-            info = await youtube.get_media(query, video=is_video)
-        except Exception as e:  # noqa: BLE001
-            LOGGER.warning("youtube error: %s", e)
-            friendly = logs.classify_youtube_error(str(e))
-            await status.edit_text(f"❌ {friendly}\n\n`{str(e)[:300]}`")
-            return
-
+async def _play_track(client: Client, message: Message, info: dict, is_video: bool, query: str, status):
+    """یک نتیجه‌ی آماده را پخش/به صف اضافه می‌کند و پیام مناسب می‌دهد."""
     if not info.get("stream_url"):
         await status.edit_text("❌ لینک قابل پخشی پیدا نشد.")
         return
@@ -125,6 +85,161 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
         )
 
 
+async def _search(chat_id: int, query: str, is_video: bool, status):
+    """جست‌وجو طبق ترجیح پلتفرم. info یا None (با پیام خطا روی status)."""
+    info = None
+    mode = platform_pref.get(chat_id)  # both | youtube | soundcloud
+
+    if not is_video and mode in (platform_pref.BOTH, platform_pref.SOUNDCLOUD):
+        try:
+            sc = await soundcloud.search(query)
+            if sc and sc.get("stream_url"):
+                info = sc
+        except Exception as e:  # noqa: BLE001
+            LOGGER.debug("soundcloud search: %s", e)
+
+    if info is None and mode == platform_pref.SOUNDCLOUD and not is_video:
+        await status.edit_text("❌ در ساوند کلاد پیدا نشد.\n(می‌توانی پلتفرم را از پنل به یوتیوب تغییر دهی.)")
+        return None
+
+    if info is None:
+        try:
+            info = await youtube.get_media(query, video=is_video)
+        except Exception as e:  # noqa: BLE001
+            LOGGER.warning("youtube error: %s", e)
+            friendly = logs.classify_youtube_error(str(e))
+            await status.edit_text(f"❌ {friendly}\n\n`{str(e)[:300]}`")
+            return None
+    return info
+
+
+async def _handle_play(client: Client, message: Message, is_video: bool):
+    if not await auth.guard_message(client, message):
+        return
+    if message.chat.type.name == "PRIVATE":
+        await message.reply_text(GROUP_ONLY)
+        return
+
+    # اگر روی یک فایل صوتی/ویدیویی تلگرام ریپلای شده، مستقیم آن را پخش کن
+    if await _play_telegram_file(client, message):
+        return
+
+    query = " ".join(message.command[1:]).strip()
+    if not query and message.reply_to_message and message.reply_to_message.text:
+        query = message.reply_to_message.text.strip()
+    if not query:
+        example = "پخش فیلم هزارپا" if is_video else "پخش اهنگ شادمهر"
+        await message.reply_text(f"نام {'فیلم' if is_video else 'آهنگ'} یا لینک را بده.\nمثال: `{example}`")
+        return
+
+    db.add_chat(message.chat.id)
+    status = await message.reply_text("🔎 در حال جست‌وجو...")
+    info = await _search(message.chat.id, query, is_video, status)
+    if info is None:
+        return
+    await _play_track(client, message, info, is_video, query, status)
+
+
+# --- ریپلای روی فایل صوتی/ویدیویی: افزودن به صف یا پخش ---
+async def _play_telegram_file(client: Client, message: Message) -> bool:
+    """اگر روی یک فایل صوتی/ویدیویی ریپلای شده، آن را پخش/به صف می‌کند. True اگر انجام شد."""
+    reply = message.reply_to_message
+    media = None
+    if reply:
+        media = reply.audio or reply.voice or reply.video or reply.document
+    if not media:
+        return False
+
+    db.add_chat(message.chat.id)
+    status = await message.reply_text("⬇️ در حال آماده‌سازی فایل...")
+    try:
+        import os
+        os.makedirs(player.DOWNLOAD_DIR, exist_ok=True)
+        path = await client.download_media(reply, file_name=os.path.join(player.DOWNLOAD_DIR, ""))
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("tg media download failed: %s", e)
+        await status.edit_text(f"❌ دانلود فایل ناموفق:\n`{str(e)[:200]}`")
+        return True
+
+    title = getattr(media, "title", None) or getattr(media, "file_name", None) or "فایل تلگرام"
+    dur = getattr(media, "duration", 0) or 0
+    is_video = bool(reply.video)
+    track = Track(
+        title=title, stream_url=path, webpage_url="",
+        duration=dur, duration_text=_fmt_dur(dur), thumbnail=None,
+        requester=_requester_name(message), is_video=is_video,
+        query="", video_id="", source="telegram",
+    )
+    track.local_path = path
+    try:
+        with logs.stage("CALL_PLAY", message.chat.id, title=title, video=is_video):
+            pos = await player.play_or_queue(message.chat.id, track)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.error("playback error: %s", e)
+        err = str(e)
+        if "GROUPCALL" in err.upper() or "no active" in err.lower():
+            await status.edit_text("❌ ابتدا ویس‌چت گروه را روشن کنید.")
+        else:
+            await status.edit_text(f"❌ خطا در پخش:\n`{e}`")
+        return True
+    if pos == 0:
+        await status.delete()
+    else:
+        await status.edit_text(f"✅ به صف اضافه شد (موقعیت {pos}):\n**{title}**")
+    return True
+
+
+def _fmt_dur(seconds: int) -> str:
+    if not seconds:
+        return "نامشخص"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+# --- «پخش» تنها (ریپلای روی فایل تلگرام، یا «پخش <اسم>») ---
+# نکته: این هندلر «پخش» را می‌گیرد و چون قبل از play_cmd ثبت می‌شود،
+# «پخش اهنگ/فیلم ...» هم به اینجا می‌رسد؛ پس خودمان کلیدواژه را تشخیص می‌دهیم.
+_VIDEO_KW = {"فیلم", "ویدیو", "ویدئو", "کلیپ"}
+_AUDIO_KW = {"اهنگ", "آهنگ", "موزیک", "موسیقی", "صدا"}
+
+
+@Client.on_message(fa_command(["پخش", "بذار", "بنداز"]))
+async def bare_play_cmd(client: Client, message: Message):
+    if not await auth.guard_message(client, message):
+        return
+    if message.chat.type.name == "PRIVATE":
+        await message.reply_text(GROUP_ONLY)
+        return
+
+    # ۱) ریپلای روی فایل صوتی/ویدیویی تلگرام → مستقیم پخش
+    if await _play_telegram_file(client, message):
+        return
+
+    # ۲) تشخیص «پخش اهنگ/فیلم <اسم>» و جداکردن نوع + پاک‌سازی کوئری
+    args = message.command[1:]
+    is_video = False
+    if args and args[0] in _VIDEO_KW:
+        is_video = True
+        args = args[1:]
+    elif args and args[0] in _AUDIO_KW:
+        args = args[1:]
+
+    query = " ".join(args).strip()
+    if not query and message.reply_to_message and message.reply_to_message.text:
+        query = message.reply_to_message.text.strip()
+    if not query:
+        await message.reply_text("نام آهنگ/فیلم یا لینک را بده، یا روی یک فایل ریپلای کن.\nمثال: `پخش اهنگ شادمهر`")
+        return
+
+    db.add_chat(message.chat.id)
+    status = await message.reply_text("🔎 در حال جست‌وجو...")
+    info = await _search(message.chat.id, query, is_video, status)
+    if info is None:
+        return
+    await _play_track(client, message, info, is_video, query, status)
+
+
 # --- پخش آهنگ: «پخش اهنگ» / «پخش آهنگ» ---
 @Client.on_message(fa_command(["پخش اهنگ", "پخش آهنگ"]))
 async def play_cmd(client: Client, message: Message):
@@ -140,6 +255,8 @@ async def vplay_cmd(client: Client, message: Message):
 # --- مکث: «مکث» / «توقف» ---
 @Client.on_message(fa_command(["مکث", "توقف"]))
 async def pause_cmd(client: Client, message: Message):
+    if not await auth.guard_message(client, message):
+        return
     track = q.now_playing(message.chat.id)
     if not track:
         await message.reply_text("چیزی در حال پخش نیست.")
@@ -154,6 +271,8 @@ async def pause_cmd(client: Client, message: Message):
 # --- ادامه: «ادامه» / «شروع» ---
 @Client.on_message(fa_command(["ادامه", "شروع"]))
 async def resume_cmd(client: Client, message: Message):
+    if not await auth.guard_message(client, message):
+        return
     track = q.now_playing(message.chat.id)
     if not track:
         await message.reply_text("چیزی در حال پخش نیست.")
@@ -168,6 +287,8 @@ async def resume_cmd(client: Client, message: Message):
 # --- آهنگ بعدی: «رد» / «بعدی» / «آهنگ بعدی» / «اهنگ بعدی» ---
 @Client.on_message(fa_command(["اهنگ بعدی", "آهنگ بعدی", "بعدی", "رد"]))
 async def skip_cmd(client: Client, message: Message):
+    if not await auth.guard_message(client, message):
+        return
     if q.now_playing(message.chat.id) is None:
         await message.reply_text("چیزی در حال پخش نیست.")
         return
@@ -181,6 +302,8 @@ async def skip_cmd(client: Client, message: Message):
 # --- توقف کامل: «خروج» / «اتمام» ---
 @Client.on_message(fa_command(["خروج", "اتمام"]))
 async def stop_cmd(client: Client, message: Message):
+    if not await auth.guard_message(client, message):
+        return
     if q.now_playing(message.chat.id) is None:
         await message.reply_text("چیزی در حال پخش نیست.")
         return
@@ -191,6 +314,8 @@ async def stop_cmd(client: Client, message: Message):
 # --- صف: «صف» / «صف پخش» / «لیست» / «لیست پخش» ---
 @Client.on_message(fa_command(["صف پخش", "لیست پخش", "صف", "لیست"]))
 async def queue_cmd(client: Client, message: Message):
+    if not await auth.guard_message(client, message):
+        return
     cur = q.now_playing(message.chat.id)
     if not cur:
         await message.reply_text("صف خالی است.")

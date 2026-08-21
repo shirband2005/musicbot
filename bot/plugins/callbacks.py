@@ -5,6 +5,7 @@ import os
 from pyrogram import Client, filters
 from pyrogram.types import CallbackQuery
 
+from bot import auth
 from bot import call
 from bot import player
 from bot import platform_pref
@@ -18,6 +19,8 @@ LOGGER = logging.getLogger("musicbot.callbacks")
 # --- ناوبری پنل راهنما: 'h|<node>' ---
 @Client.on_callback_query(filters.regex(r"^h\|"))
 async def help_nav_cb(client: Client, cq: CallbackQuery):
+    if not await auth.guard_callback(client, cq):
+        return
     node = cq.data.split("|", 1)[1]
     if node == "close":
         try:
@@ -58,6 +61,8 @@ async def _apply_volume(chat_id: int):
 
 @Client.on_callback_query(filters.regex(r"^p\|"))
 async def panel_cb(client: Client, cq: CallbackQuery):
+    if not await auth.guard_callback(client, cq):
+        return
     try:
         _, action, chat_id_s = cq.data.split("|", 2)
         chat_id = int(chat_id_s)
