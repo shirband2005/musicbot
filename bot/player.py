@@ -19,6 +19,7 @@ from bot.panel import (
     cover_is_animation,
     cover_static_file,
     has_cover,
+    panel_entities,
     panel_keyboard,
     panel_text,
 )
@@ -223,33 +224,37 @@ async def _send_panel(chat_id: int, new: bool = False) -> None:
 
     vol, muted = get_volume(chat_id), is_muted(chat_id)
     text = panel_text(track, vol, muted)
+    ents = panel_entities(track, vol, muted)
     kb = panel_keyboard(chat_id, track, vol, muted)
     cover = cover_file()
     static = cover_static_file()
     try:
         if track.paused and static:
-            msg = await app.send_photo(chat_id, _cover_ref("static", static), caption=text, reply_markup=kb)
+            msg = await app.send_photo(chat_id, _cover_ref("static", static), caption=text,
+                                       caption_entities=ents, reply_markup=kb)
             _panel_media[chat_id] = "static"
             if msg.photo and "static" not in _cover_fid:
                 _save_cover_fid("static", msg.photo.file_id)
         elif cover and cover_is_animation():
-            msg = await app.send_animation(chat_id, _cover_ref("anim", cover), caption=text, reply_markup=kb)
+            msg = await app.send_animation(chat_id, _cover_ref("anim", cover), caption=text,
+                                           caption_entities=ents, reply_markup=kb)
             _panel_media[chat_id] = "anim"
             if msg.animation and "anim" not in _cover_fid:
                 _save_cover_fid("anim", msg.animation.file_id)
         elif cover:
-            msg = await app.send_photo(chat_id, _cover_ref("photo", cover), caption=text, reply_markup=kb)
+            msg = await app.send_photo(chat_id, _cover_ref("photo", cover), caption=text,
+                                       caption_entities=ents, reply_markup=kb)
             _panel_media[chat_id] = "photo"
             if msg.photo and "photo" not in _cover_fid:
                 _save_cover_fid("photo", msg.photo.file_id)
         else:
-            msg = await app.send_message(chat_id, text, reply_markup=kb)
+            msg = await app.send_message(chat_id, text, entities=ents, reply_markup=kb)
             _panel_media[chat_id] = "text"
         _panel_msg[chat_id] = msg.id
     except Exception as e:  # noqa: BLE001
         LOGGER.warning("ارسال پنل ناموفق، بازگشت به متن: %s", e)
         try:
-            msg = await app.send_message(chat_id, text, reply_markup=kb)
+            msg = await app.send_message(chat_id, text, entities=ents, reply_markup=kb)
             _panel_msg[chat_id] = msg.id
             _panel_media[chat_id] = "text"
         except Exception as e2:  # noqa: BLE001
@@ -276,6 +281,7 @@ async def refresh_panel(chat_id: int) -> None:
         return
     vol, muted = get_volume(chat_id), is_muted(chat_id)
     text = panel_text(track, vol, muted)
+    ents = panel_entities(track, vol, muted)
     kb = panel_keyboard(chat_id, track, vol, muted)
 
     # آیا باید نوع کاور عوض شود؟ (پخش=متحرک، مکث=ثابت)
@@ -289,16 +295,19 @@ async def refresh_panel(chat_id: int) -> None:
         if desired in ("static", "anim") and desired != current:
             # تعویض خودِ رسانه (فیلم اکولایزر ↔ عکس ثابت) — با file_id کش‌شده
             if desired == "static":
-                media = InputMediaPhoto(_cover_ref("static", static), caption=text)
+                media = InputMediaPhoto(_cover_ref("static", static), caption=text,
+                                        caption_entities=ents)
             else:
-                media = InputMediaAnimation(_cover_ref("anim", anim), caption=text)
+                media = InputMediaAnimation(_cover_ref("anim", anim), caption=text,
+                                            caption_entities=ents)
             await app.edit_message_media(chat_id, mid, media=media, reply_markup=kb)
             _panel_media[chat_id] = desired
         elif desired in ("anim", "static", "photo"):
             # فقط متن/کیبورد بروزرسانی شود (رسانه ثابت)
-            await app.edit_message_caption(chat_id, mid, caption=text, reply_markup=kb)
+            await app.edit_message_caption(chat_id, mid, caption=text,
+                                           caption_entities=ents, reply_markup=kb)
         else:
-            await app.edit_message_text(chat_id, mid, text, reply_markup=kb)
+            await app.edit_message_text(chat_id, mid, text, entities=ents, reply_markup=kb)
     except MessageNotModified:
         pass
     except Exception as e:  # noqa: BLE001

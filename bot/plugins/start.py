@@ -14,6 +14,10 @@ _BLUE = enums.ButtonStyle.PRIMARY
 _RED = enums.ButtonStyle.DANGER
 _GREEN = enums.ButtonStyle.SUCCESS
 
+# آیکون ایموجی پرمیوم دکمه‌های راهنما
+_EMO_BACK = 5235864325540815679   # برگشت
+_EMO_CLOSE = 5215697242177939628  # بستن پنل
+
 # دکمه پشتیبانی به پروفایل مالک (با آیدی عددی) وصل می‌شود
 SUPPORT_USERNAME = "tg://user?id=8406519786"
 
@@ -115,11 +119,13 @@ def help_markup(node: str) -> InlineKeyboardMarkup:
             if data.startswith("url|"):
                 btn_row.append(InlineKeyboardButton(label, url=data[4:], style=_BLUE))
             elif data == "h|close":
-                # دکمه‌های بستن پنل/راهنما → قرمز
-                btn_row.append(InlineKeyboardButton(label, callback_data=data, style=_RED))
+                # دکمه‌های بستن پنل/راهنما → قرمز + آیکون
+                btn_row.append(InlineKeyboardButton(label, callback_data=data, style=_RED,
+                                                    icon_custom_emoji_id=_EMO_CLOSE))
             elif label.startswith("🔙") or data in ("h|main", "h|control"):
-                # دکمه‌های بازگشت → آبی
-                btn_row.append(InlineKeyboardButton(label, callback_data=data, style=_BLUE))
+                # دکمه‌های بازگشت → آبی + آیکون
+                btn_row.append(InlineKeyboardButton(label, callback_data=data, style=_BLUE,
+                                                    icon_custom_emoji_id=_EMO_BACK))
             else:
                 # سایر دکمه‌های ناوبری راهنما → آبی
                 btn_row.append(InlineKeyboardButton(label, callback_data=data, style=_BLUE))
