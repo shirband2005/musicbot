@@ -40,6 +40,7 @@ def _main_kb() -> InlineKeyboardMarkup:
          InlineKeyboardButton("👤 نام صاحب کارت", callback_data="sadm|set|card_holder")],
         [InlineKeyboardButton("🪙 آدرس کریپتو", callback_data="sadm|set|crypto_addr"),
          InlineKeyboardButton("💱 نرخ USDT", callback_data="sadm|set|usdt_rate")],
+        [InlineKeyboardButton("🎁 ساخت کد هدیه", callback_data="sadm|gift")],
         [InlineKeyboardButton("❌ بستن", callback_data="sadm|close")],
     ])
 
@@ -190,6 +191,16 @@ async def subadmin_cb(client: Client, cq: CallbackQuery):
         await cq.answer()
         return
 
+    if action == "gift":
+        _awaiting[cq.from_user.id] = "gift::new"
+        await cq.message.reply_text(
+            "🎁 کد هدیه‌ی جدید را به این شکل بفرست:\n"
+            "`کد تیر ماه تعداد‌استفاده`\n\n"
+            "تیر: `basic` یا `pro` | ماه: عدد (۰=دائمی)\n"
+            "مثال: `NOWRUZ pro 1 100`  (کد NOWRUZ، حرفه‌ای، ۱ماهه، ۱۰۰ بار)")
+        await cq.answer()
+        return
+
 
 # --- دریافت ورودی مالک برای ویرایش تنظیمات (بالاترین اولویت در PV) ---
 @Client.on_message(filters.private & filters.text, group=-1)
@@ -211,6 +222,17 @@ async def subadmin_input(client: Client, message: Message):
             await message.reply_text(f"✅ قیمت پلن {plan} ثبت شد: ⭐️{stars_s} / {int(toman_s):,}ت")
         except Exception:  # noqa: BLE001
             await message.reply_text("❌ قالب اشتباه. مثال: `100 150000`")
+    elif key == "gift::new":
+        try:
+            code, tier, months_s, uses_s = val.split()
+            if tier not in (sub.TIER_BASIC, sub.TIER_PRO):
+                raise ValueError("tier")
+            db.gift_create(code, tier, int(months_s), int(uses_s))
+            await message.reply_text(
+                f"✅ کد هدیه ساخته شد:\n`{code}` → {sub.TIER_LABEL[tier]} "
+                f"{sub.duration_label(int(months_s))} ({uses_s} بار)")
+        except Exception:  # noqa: BLE001
+            await message.reply_text("❌ قالب اشتباه. مثال: `NOWRUZ pro 1 100`")
     else:
         db.pay_set(key, val)
         await message.reply_text(f"✅ ثبت شد: `{val}`")

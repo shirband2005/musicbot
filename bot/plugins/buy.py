@@ -26,6 +26,9 @@ LOGGER = logging.getLogger("musicbot.buy")
 # payload پرداخت Stars: sub|<order_id>
 _PAYLOAD_PREFIX = "sub"
 
+# کاربرانی که منتظر ارسال کد هدیه هستند: {user_id: True}
+_await_gift: dict = {}
+
 
 def _tier_kb(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -78,11 +81,60 @@ async def buy_cb(client: Client, cq: CallbackQuery):
             return
         rows = [[InlineKeyboardButton(title, callback_data=f"buy|grp|{cid}")]
                 for cid, title in groups[:20]]
+        rows.append([InlineKeyboardButton("📊 اشتراک‌های من", callback_data="buy|mine")])
+        rows.append([InlineKeyboardButton("🎁 کد هدیه دارم", callback_data="buy|gift")])
         await cq.message.reply_text(
             "🛒 **خرید اشتراک**\n\nگروهی که می‌خواهی اشتراک برایش بخری را انتخاب کن:",
             reply_markup=InlineKeyboardMarkup(rows),
         )
         await cq.answer()
+        return
+
+    if action == "mine":
+        # اشتراک‌های گروه‌هایی که این کاربر خریده/ادمینشه
+        groups = await _admin_groups(client, cq.from_user.id)
+        lines = ["📊 **وضعیت اشتراک گروه‌های تو:**\n"]
+        any_sub = False
+        for cid, title in groups:
+            s = db.sub_get(cid)
+            if s:
+                any_sub = True
+                lines.append(f"• {title}\n  تیر: {sub.TIER_LABEL.get(s['tier'], s['tier'])} | "
+                             f"{sub.expires_text(cid)}")
+        if not any_sub:
+            lines.append("هیچ اشتراک فعالی نداری.")
+        await cq.message.reply_text("\n".join(lines))
+        await cq.answer()
+        return
+
+    if action == "gift":
+        _await_gift[cq.from_user.id] = True
+        await cq.message.reply_text(
+            "🎁 کد هدیه را بفرست.\nبعد از تأیید، باید گروه مقصد را انتخاب کنی.")
+        await cq.answer()
+        return
+
+    if action == "gapply":
+        # buy|gapply|<code>|<chat_id>
+        code, chat_id = parts[2], int(parts[3])
+        g = db.gift_get(code)
+        if not g or g["used_count"] >= g["max_uses"]:
+            await cq.answer("کد نامعتبر یا مصرف‌شده است.", show_alert=True)
+            return
+        if not db.gift_redeem(code):
+            await cq.answer("کد قابل استفاده نیست.", show_alert=True)
+            return
+        from bot import group_config as gc
+        sub.activate(chat_id, g["tier"], g["months"], buyer_id=cq.from_user.id)
+        gc.set_enabled(chat_id, True)
+        await cq.message.edit_text(
+            f"🎁 کد هدیه اعمال شد!\nگروه فعال شد: {sub.TIER_LABEL.get(g['tier'])} — "
+            f"{sub.expires_text(chat_id)}")
+        try:
+            await client.send_message(chat_id, "🎉 اشتراک این گروه با کد هدیه فعال شد!")
+        except Exception:  # noqa: BLE001
+            pass
+        await cq.answer("فعال شد!")
         return
 
     if action == "grp":
@@ -186,6 +238,38 @@ async def _start_payment(client, cq, chat_id, tier, months, method):
         )
         await cq.answer()
         return
+
+
+# --- دریافت کد هدیه (پیام متنی ساده در PV، وقتی کاربر منتظر است) ---
+@Client.on_message(filters.private & filters.text, group=-2)
+async def gift_input(client: Client, message: Message):
+    uid = message.from_user.id if message.from_user else 0
+    if not _await_gift.get(uid):
+        return
+    # اگر ریپلای است، احتمالاً رسید است نه کد هدیه → رد کن
+    if message.reply_to_message:
+        return
+    code = message.text.strip()
+    _await_gift.pop(uid, None)
+    g = db.gift_get(code)
+    if not g:
+        await message.reply_text("❌ کد هدیه نامعتبر است.")
+        return
+    if g["used_count"] >= g["max_uses"]:
+        await message.reply_text("❌ ظرفیت این کد هدیه تمام شده است.")
+        return
+    # انتخاب گروه مقصد
+    groups = await _admin_groups(client, uid)
+    if not groups:
+        await message.reply_text("اول ربات را به گروهت اضافه کن و ادمین شو.")
+        return
+    rows = [[InlineKeyboardButton(title, callback_data=f"buy|gapply|{code}|{cid}")]
+            for cid, title in groups[:20]]
+    await message.reply_text(
+        f"🎁 کد معتبر است: {sub.TIER_LABEL.get(g['tier'])} — "
+        f"{sub.duration_label(g['months'])}\n\nگروه مقصد را انتخاب کن:",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
 
 
 # --- دریافت رسید/هش برای سفارش کارت/کریپتو (ریپلای در PV) → فوروارد به مالک ---

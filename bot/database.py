@@ -116,6 +116,15 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+        -- کدهای هدیه/تخفیف (مالک می‌سازد، کاربر در خرید وارد می‌کند)
+        CREATE TABLE IF NOT EXISTS gift_codes (
+            code       TEXT PRIMARY KEY,
+            tier       TEXT DEFAULT 'basic',   -- تیری که هدیه می‌دهد
+            months     INTEGER DEFAULT 1,      -- 0 = دائمی
+            max_uses   INTEGER DEFAULT 1,
+            used_count INTEGER DEFAULT 0,
+            created_at REAL DEFAULT 0
+        );
         """
     )
     conn.commit()
@@ -631,3 +640,44 @@ def pay_set(key: str, value: str) -> None:
             (key, str(value)),
         )
         conn.commit()
+
+
+# --- کدهای هدیه ---
+def gift_create(code: str, tier: str, months: int, max_uses: int = 1) -> None:
+    import time
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO gift_codes(code, tier, months, max_uses, used_count, created_at) "
+            "VALUES (?,?,?,?,0,?) ON CONFLICT(code) DO UPDATE SET "
+            "tier=excluded.tier, months=excluded.months, max_uses=excluded.max_uses",
+            (code, tier, months, max_uses, time.time()),
+        )
+        conn.commit()
+
+
+def gift_get(code: str) -> Optional[dict]:
+    with _lock:
+        conn = _connect()
+        row = conn.execute("SELECT * FROM gift_codes WHERE code=?", (code,)).fetchone()
+        return dict(row) if row else None
+
+
+def gift_redeem(code: str) -> bool:
+    """اگر کد معتبر و ظرفیت دارد، یک استفاده ثبت و True برمی‌گرداند."""
+    with _lock:
+        conn = _connect()
+        row = conn.execute("SELECT used_count, max_uses FROM gift_codes WHERE code=?",
+                           (code,)).fetchone()
+        if not row or row["used_count"] >= row["max_uses"]:
+            return False
+        conn.execute("UPDATE gift_codes SET used_count=used_count+1 WHERE code=?", (code,))
+        conn.commit()
+        return True
+
+
+def gift_all() -> list:
+    with _lock:
+        conn = _connect()
+        rows = conn.execute("SELECT * FROM gift_codes ORDER BY created_at DESC LIMIT 50").fetchall()
+        return [dict(r) for r in rows]

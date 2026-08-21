@@ -364,6 +364,18 @@ def test_usdt_conversion():
     assert cv.toman_to_usdt(100000, 0) == Decimal("0")
 
 
+def test_gift_codes(fresh_db):
+    """ساخت، اعتبارسنجی، مصرف و اتمام ظرفیت کد هدیه."""
+    from bot import database as db
+    db.gift_create("NOWRUZ", "pro", 1, max_uses=2)
+    g = db.gift_get("NOWRUZ")
+    assert g and g["tier"] == "pro" and g["max_uses"] == 2
+    assert db.gift_redeem("NOWRUZ") is True   # استفاده ۱
+    assert db.gift_redeem("NOWRUZ") is True   # استفاده ۲
+    assert db.gift_redeem("NOWRUZ") is False  # ظرفیت تمام
+    assert db.gift_redeem("UNKNOWN") is False  # کد ناموجود
+
+
 # ---------------- migration از settings قدیمی ----------------
 def test_migration_from_settings(tmp_path, monkeypatch):
     import sqlite3
