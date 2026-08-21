@@ -93,21 +93,31 @@ async def build_stream(chat_id: int, message) -> Stream:
     url = f"http://{_HOST}:{_PORT}/stream/{chat_id}"
 
     # دستورهای ffmpeg که خروجی خام برای ntgcalls تولید می‌کنند (۳۶۰p).
-    # نکته مهم: به هر پروسه فقط استریم لازمش را می‌دهیم:
     #  - صدا: -vn (بدون decode ویدیوی سنگین x265) → صدا عقب نمی‌ماند
     #  - تصویر: -an (بدون decode صدا)
-    # stderr هر پروسه در فایل لاگ ذخیره می‌شود (برای دیباگ نبود صدا/تصویر).
+    # نکته مهم: منبع SHELL در ntgcalls دستور را خودش پارس می‌کند و اجازه‌ی
+    # کاراکترهای شل (`2>`, `|`, `;` ...) را نمی‌دهد. پس دستور ffmpeg را در یک
+    # اسکریپت wrapper می‌گذاریم و SHELL فقط `bash script` را می‌بیند؛ ریدایرکت
+    # لاگ خطا داخل اسکریپت انجام می‌شود.
     common = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2"
     vlog = f"/tmp/tgv_{chat_id}.log"
     alog = f"/tmp/tga_{chat_id}.log"
-    vcmd = (
-        f"ffmpeg {common} -i {url} -an -v error "
-        f"-map 0:v:0? -f rawvideo -r 20 -pix_fmt yuv420p -vf scale=640:360 pipe:1 2>{vlog}"
-    )
-    acmd = (
-        f"ffmpeg {common} -i {url} -vn -v error "
-        f"-map 0:a:0? -f s16le -ac 2 -ar 48000 pipe:1 2>{alog}"
-    )
+    vsh = f"/tmp/tgv_{chat_id}.sh"
+    ash = f"/tmp/tga_{chat_id}.sh"
+    with open(vsh, "w") as fh:
+        fh.write(
+            f"#!/bin/bash\nexec ffmpeg {common} -i '{url}' -an -v error "
+            f"-map 0:v:0? -f rawvideo -r 20 -pix_fmt yuv420p -vf scale=640:360 pipe:1 2>{vlog}\n"
+        )
+    with open(ash, "w") as fh:
+        fh.write(
+            f"#!/bin/bash\nexec ffmpeg {common} -i '{url}' -vn -v error "
+            f"-map 0:a:0? -f s16le -ac 2 -ar 48000 pipe:1 2>{alog}\n"
+        )
+    os.chmod(vsh, 0o755)
+    os.chmod(ash, 0o755)
+    vcmd = f"bash {vsh}"
+    acmd = f"bash {ash}"
     audio = AudioStream(MediaSource.SHELL, acmd, AudioParameters(48000, 2))
     video = VideoStream(MediaSource.SHELL, vcmd, VideoParameters(640, 360, 20))
     # لاگ ffmpeg را چند ثانیه بعد به stdout بفرست (برای دیباگ از راه دور)
