@@ -201,7 +201,7 @@ async def _play_telegram_file(client: Client, message: Message) -> bool:
     # --- مسیر استریم مستقیم برای فایل حجیم (بدون دانلود) ---
     if size >= _TG_STREAM_THRESHOLD:
         status = await message.reply_text(
-            f"📡 فایل حجیم ({size // (1024*1024)} مگ) — استریم مستقیم با کیفیت ۳۶۰p...\n"
+            f"📡 فایل حجیم ({size // (1024*1024)} مگ) — استریم مستقیم...\n"
             "بدون دانلود، همه با اینترنت سرور."
         )
         track = Track(

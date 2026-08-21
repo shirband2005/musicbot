@@ -35,7 +35,7 @@ async def log(text: str) -> None:
     if not config.LOG_CHANNEL:
         return
     try:
-        await app.send_message(config.LOG_CHANNEL, text, disable_web_page_preview=True)
+        await app.send_message(config.LOG_CHANNEL, text)
     except Exception as e:  # noqa: BLE001
         LOGGER.debug("log channel send: %s", e)
 
