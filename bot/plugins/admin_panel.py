@@ -24,7 +24,6 @@ _RED = enums.ButtonStyle.DANGER
 _BLUE = enums.ButtonStyle.PRIMARY
 
 ON, OFF = "🟢", "🔴"
-SEL, NOSEL = "🔘", "⚪️"
 
 
 def _is_owner(message: Message) -> bool:
@@ -38,34 +37,34 @@ def _panel(chat_id: int):
     text = (
         "🎛 **پنل مدیریت پلیر**\n\n"
         f"وضعیت پلیر : {'🟢 روشن' if enabled else '🔴 خاموش'}\n"
-        f"پلتفرم گروه : {_lock_label(lock)}\n\n"
-        "از دکمه‌های زیر تنظیمات همین گروه را تغییر بده."
+        f"پلتفرم گروه : {_lock_label(lock)}"
     )
 
     def cb(a):
         return f"mp|{a}|{chat_id}"
 
+    # روشن/خاموش: حالت فعلی سبز، دیگری قرمز
+    on_style = _GREEN if enabled else _RED
+    off_style = _RED if enabled else _GREEN
+
+    # پلتفرم: حالت فعلی سبز، دو تای دیگر قرمز
+    sc_style = _GREEN if lock == gc.LOCK_SOUNDCLOUD else _RED
+    yt_style = _GREEN if lock == gc.LOCK_YOUTUBE else _RED
+    both_style = _GREEN if lock == gc.LOCK_NONE else _RED
+
     rows = [
-        [InlineKeyboardButton(
-            ("🔴 خاموش کردن پلیر" if enabled else "🟢 روشن کردن پلیر"),
-            callback_data=cb("toggle"),
-            style=(_RED if enabled else _GREEN),
-        )],
-        [InlineKeyboardButton("— پلتفرم گروه —", callback_data=cb("noop"), style=_BLUE)],
         [
-            InlineKeyboardButton(
-                f"{SEL if lock==gc.LOCK_NONE else NOSEL} هر دو",
-                callback_data=cb("lock_none"), style=_BLUE),
+            InlineKeyboardButton("روشن", callback_data=cb("on"), style=on_style),
+            InlineKeyboardButton("خاموش", callback_data=cb("off"), style=off_style),
         ],
+        # دکمه نمایشی (آبی) — کاری انجام نمی‌دهد
+        [InlineKeyboardButton("انتخاب پلتفرم", callback_data=cb("noop"), style=_BLUE)],
         [
-            InlineKeyboardButton(
-                f"{SEL if lock==gc.LOCK_YOUTUBE else NOSEL} فقط یوتیوب",
-                callback_data=cb("lock_yt"), style=_BLUE),
-            InlineKeyboardButton(
-                f"{SEL if lock==gc.LOCK_SOUNDCLOUD else NOSEL} فقط ساوندکلاد",
-                callback_data=cb("lock_sc"), style=_BLUE),
+            InlineKeyboardButton("ساوندکلاد", callback_data=cb("lock_sc"), style=sc_style),
+            InlineKeyboardButton("یوتیوب", callback_data=cb("lock_yt"), style=yt_style),
         ],
-        [InlineKeyboardButton("⛔️ بستن", callback_data=cb("close"), style=_RED)],
+        [InlineKeyboardButton("یوتیوب + ساوندکلاد", callback_data=cb("lock_none"), style=both_style)],
+        [InlineKeyboardButton("بستن پنل", callback_data=cb("close"), style=_RED)],
     ]
     return text, InlineKeyboardMarkup(rows)
 
@@ -158,10 +157,12 @@ async def admin_panel_cb(client: Client, cq: CallbackQuery):
         await cq.answer("بسته شد")
         return
 
-    if action == "toggle":
-        new = not gc.is_enabled(chat_id)
-        gc.set_enabled(chat_id, new)
-        await cq.answer("🟢 روشن شد" if new else "🔴 خاموش شد")
+    if action == "on":
+        gc.set_enabled(chat_id, True)
+        await cq.answer("🟢 روشن شد")
+    elif action == "off":
+        gc.set_enabled(chat_id, False)
+        await cq.answer("🔴 خاموش شد")
     elif action == "lock_none":
         gc.set_lock(chat_id, gc.LOCK_NONE)
         await cq.answer("پلتفرم: هر دو")
