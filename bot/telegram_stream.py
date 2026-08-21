@@ -169,10 +169,10 @@ async def build_stream(chat_id: int, message) -> Stream:
     _state[chat_id] = {"broadcast": _Broadcast(message)}
     url = f"http://{_HOST}:{_PORT}/stream/{chat_id}"
 
-    # کیفیت ثابت ۲۴۰p / ۱۵fps — اولویت با روانی پخش (قابل override با env).
-    vparams = os.environ.get("TG_STREAM_VF", "scale=426:240")
+    # کیفیت ثابت ۱۴۴p / ۱۵fps — اولویت با روانی پخش (قابل override با env).
+    vparams = os.environ.get("TG_STREAM_VF", "scale=256:144")
     vfps = int(os.environ.get("TG_STREAM_FPS", "15"))
-    vw, vh = 426, 240
+    vw, vh = 256, 144
     try:
         if vparams.startswith("scale="):
             wh = vparams.split("=", 1)[1].split(":")
