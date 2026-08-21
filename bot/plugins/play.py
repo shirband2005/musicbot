@@ -34,14 +34,19 @@ PLAYER_OFF = "🔇 موزیک‌پلیر در این گروه خاموش است.
 
 
 async def _gate(client: Client, message: Message) -> bool:
-    """گارد مشترک: دسترسی + گروه + روشن بودن پلیر. True یعنی می‌توان ادامه داد."""
-    if not await auth.guard_message(client, message):
-        return False
+    """گارد مشترک: گروه + دسترسی گروه (روشن بودن) + دسترسی کاربر."""
     if message.chat.type.name == "PRIVATE":
+        # در خصوصی فقط مالک/ویژه
+        if not await auth.guard_message(client, message):
+            return False
         await message.reply_text(GROUP_ONLY)
         return False
+    # ۱) اول: آیا گروه فعال است؟ (خاموش → «گروه دسترسی ندارد»)
     if not gc.is_enabled(message.chat.id):
-        await message.reply_text(PLAYER_OFF)
+        await message.reply_text(auth.DENY_GROUP, reply_markup=auth.support_kb())
+        return False
+    # ۲) سپس: آیا این کاربر دسترسی دارد؟ (نه → «شما دسترسی ندارید»)
+    if not await auth.guard_message(client, message):
         return False
     return True
 

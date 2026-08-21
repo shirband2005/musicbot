@@ -6,13 +6,36 @@
 import logging
 
 from pyrogram import Client, enums
-from pyrogram.types import CallbackQuery, Message
+from pyrogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from bot import database as db
 
 LOGGER = logging.getLogger("musicbot.auth")
 
-OWNER_ID = 8406519786  # سازنده/مالک ربات
+OWNER_ID = 8406519786  # سازنده/مالک ربات (= پشتیبانی)
+
+# دکمه ارتباط با پشتیبانی (پروفایل مالک؛ با کلیک باز می‌شود و می‌توانند پیام بدهند)
+SUPPORT_URL = f"tg://user?id={OWNER_ID}"
+
+
+def support_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("💬 ارتباط با پشتیبانی", url=SUPPORT_URL,
+                                style=enums.ButtonStyle.PRIMARY)]]
+    )
+
+
+DENY_GROUP = (
+    "⛔️ **گروه دسترسی ندارد**\n\n"
+    "برای مجاز کردن دسترسی با پشتیبانی تماس بگیرید."
+)
+DENY_USER = "⛔️ **شما دسترسی ندارید**"
+DENY_CALLBACK = "⛔️ شما دسترسی ندارید\nبا پشتیبانی تماس بگیرید."
 
 _DENY_MSG = "⛔️ فقط ادمین‌های گروه می‌توانند از ربات استفاده کنند."
 _DENY_PV = "⛔️ این ربات فقط برای مالک و ادمین‌های گروه‌هاست."
@@ -54,15 +77,16 @@ async def is_allowed(client: Client, chat_id: int, user_id: int, is_private: boo
 
 
 async def guard_message(client: Client, message: Message) -> bool:
-    """برای هندلرهای پیام. True یعنی مجاز؛ در غیر این صورت پیام رد می‌دهد و False."""
+    """برای هندلرهای پیام. True یعنی مجاز؛ در غیر این صورت پیام مناسب می‌دهد و False."""
     user = message.from_user
     if not user:
         return False  # پیام کانال/ناشناس
     is_private = message.chat.type.name == "PRIVATE"
     if await is_allowed(client, message.chat.id, user.id, is_private):
         return True
+    # کاربر مجاز نیست → پیام «شما دسترسی ندارید» + دکمه پشتیبانی
     try:
-        await message.reply_text(_DENY_PV if is_private else _DENY_MSG)
+        await message.reply_text(DENY_USER, reply_markup=support_kb())
     except Exception:  # noqa: BLE001
         pass
     return False
@@ -78,7 +102,7 @@ async def guard_callback(client: Client, cq: CallbackQuery) -> bool:
     if await is_allowed(client, chat_id, user.id, is_private):
         return True
     try:
-        await cq.answer(_DENY_MSG, show_alert=True)
+        await cq.answer(DENY_CALLBACK, show_alert=True)
     except Exception:  # noqa: BLE001
         pass
     return False
