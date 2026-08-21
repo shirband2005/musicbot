@@ -106,6 +106,21 @@ async def _play_track(client: Client, message: Message, info: dict, is_video: bo
             f"✅ به صف اضافه شد (موقعیت {pos}):\n**{track.title}**\n⏱ {track.duration_text}"
         )
 
+    # لاگ پخش در کانال (بدون بلاک کردن پاسخ)
+    try:
+        import asyncio
+        from bot import channel
+        chat_title = getattr(message.chat, "title", "") or str(message.chat.id)
+        asyncio.create_task(channel.log(
+            f"🎵 **پخش جدید**\n"
+            f"• آهنگ: {track.title}\n"
+            f"• منبع: {track.source}\n"
+            f"• گروه: {chat_title}\n"
+            f"• توسط: {_requester_name(message)}"
+        ))
+    except Exception:  # noqa: BLE001
+        pass
+
 
 async def _search(chat_id: int, query: str, is_video: bool, status):
     """جست‌وجو طبق ترجیح پلتفرم (با اعمال قفل گروه). info یا None."""

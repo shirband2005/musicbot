@@ -100,11 +100,30 @@ async def main():
         health.mark_ready(me.username or "")
     except Exception:  # noqa: BLE001
         pass
+    # اعلام روشن‌شدن در کانال لاگ + بکاپ اولیه دیتابیس
+    try:
+        from bot import channel
+        from bot import database as _db
+        n_chats = len(_db.get_chats())
+        await channel.log(
+            f"🟢 **ربات روشن شد**\n"
+            f"• ربات: @{me.username}\n"
+            f"• گروه‌های ثبت‌شده: {n_chats}\n"
+            f"• آهنگ‌های آرشیو: {_db.archive_count()}"
+        )
+        await channel.backup_db(force=True)
+    except Exception as e:  # noqa: BLE001
+        logs.warn("startup channel log: %s", e)
     logs.info("🎵 ربات آماده است.")
 
     await idle()
 
     logs.info("در حال خاموش شدن...")
+    try:
+        from bot import channel
+        await channel.log("🔴 **ربات خاموش شد**")
+    except Exception:  # noqa: BLE001
+        pass
     await app.stop()
     await assistant.stop()
 

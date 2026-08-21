@@ -25,6 +25,8 @@
 | `BOT_TOKEN` | از @BotFather |
 | `STRING_SESSION` | رشته نشست یوزربات کمکی (اکانت دوم) |
 | `OWNER_ID` | آیدی عددی مالک |
+| `LOG_CHANNEL` | (اختیاری) آیدی کانال لاگ رویدادها + بکاپ دیتابیس |
+| `ARCHIVE_CHANNEL` | (اختیاری) آیدی کانال آرشیو آهنگ (ربات باید ادمین باشد) |
 | `DB_PATH` | (اختیاری) مسیر فایل دیتابیس — پیش‌فرض `/data/musicbot.db` |
 | `COOKIES_FILE` | (اختیاری) مسیر cookies.txt یوتیوب |
 | `COVER_PATH` | (اختیاری) مسیر کاور پنل — پیش‌فرض `assets/cover.jpg` |

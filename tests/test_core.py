@@ -234,6 +234,34 @@ def test_panel_entities_utf16_bounds(fresh_db):
         assert e.offset + e.length <= total_u16
 
 
+# ---------------- آرشیو کانال ----------------
+def test_archive_crud(fresh_db):
+    db = fresh_db
+    assert db.archive_get("vidX") is None
+    assert db.archive_count() == 0
+    db.archive_put("vidX", "FILEID123", 42, "Song X", 180, False)
+    rec = db.archive_get("vidX")
+    assert rec is not None
+    assert rec["file_id"] == "FILEID123"
+    assert rec["message_id"] == 42
+    assert rec["title"] == "Song X"
+    assert rec["is_video"] is False
+    assert db.archive_count() == 1
+    db.archive_put("vidX", "NEWFILE", 43, "Song X", 180, False)
+    assert db.archive_get("vidX")["file_id"] == "NEWFILE"
+    assert db.archive_count() == 1
+
+
+def test_channel_norm_key(fresh_db):
+    import importlib
+    from bot import channel
+    importlib.reload(channel)
+    assert channel._norm_key("abc123", "هر چیزی") == "abc123"
+    k = channel._norm_key("", "آهنگ Test")
+    assert k.startswith("q:")
+    assert "اهنگ" in k
+
+
 # ---------------- migration از settings قدیمی ----------------
 def test_migration_from_settings(tmp_path, monkeypatch):
     import sqlite3

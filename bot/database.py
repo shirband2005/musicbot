@@ -65,6 +65,16 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             lock     TEXT DEFAULT 'none',   -- none|youtube|soundcloud
             platform TEXT DEFAULT 'both'    -- both|youtube|soundcloud (چرخش کاربر)
         );
+        -- آرشیو آهنگ در کانال: کلید = video_id یا کوئری نرمال‌شده
+        CREATE TABLE IF NOT EXISTS channel_songs (
+            key         TEXT PRIMARY KEY,   -- video_id یا 'q:'+کوئری نرمال‌شده
+            file_id     TEXT NOT NULL,      -- file_id تلگرام (برای ارسال سریع)
+            message_id  INTEGER,            -- شناسه پیام در کانال آرشیو
+            title       TEXT,
+            duration    INTEGER DEFAULT 0,
+            is_video    INTEGER DEFAULT 0,
+            added_at    REAL DEFAULT 0
+        );
         """
     )
     conn.commit()
@@ -160,6 +170,50 @@ def queue_clear(chat_id: int) -> None:
         conn = _connect()
         conn.execute("DELETE FROM play_queue WHERE chat_id=?", (chat_id,))
         conn.commit()
+
+
+# --- آرشیو آهنگ در کانال (دیتابیس بی‌نهایت) ---
+def archive_get(key: str) -> Optional[dict]:
+    """اطلاعات آهنگ آرشیوشده در کانال را برمی‌گرداند (اگر باشد)."""
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT key, file_id, message_id, title, duration, is_video "
+            "FROM channel_songs WHERE key=?",
+            (key,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "key": row["key"],
+            "file_id": row["file_id"],
+            "message_id": row["message_id"],
+            "title": row["title"],
+            "duration": row["duration"],
+            "is_video": bool(row["is_video"]),
+        }
+
+
+def archive_put(key: str, file_id: str, message_id: int, title: str,
+                duration: int, is_video: bool) -> None:
+    import time
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO channel_songs(key, file_id, message_id, title, duration, is_video, added_at) "
+            "VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET file_id=excluded.file_id, "
+            "message_id=excluded.message_id, title=excluded.title, "
+            "duration=excluded.duration, is_video=excluded.is_video",
+            (key, file_id, message_id, title, duration, 1 if is_video else 0, time.time()),
+        )
+        conn.commit()
+
+
+def archive_count() -> int:
+    with _lock:
+        conn = _connect()
+        return conn.execute("SELECT COUNT(*) AS c FROM channel_songs").fetchone()["c"]
 
 
 # --- کش رسانه (فایل‌های دانلودشده) ---

@@ -121,7 +121,7 @@ async def _ensure_local_file(track: Track) -> bool:
     if track.local_path and os.path.isfile(track.local_path):
         return True
 
-    # ۱) بررسی کش با video_id (اگر می‌دانیم کدام ویدیوست)
+    # ۱) بررسی کش محلی با video_id (اگر می‌دانیم کدام ویدیوست)
     vid = getattr(track, "video_id", "") or ""
     if vid:
         cached = db.cache_get(vid)
@@ -130,7 +130,24 @@ async def _ensure_local_file(track: Track) -> bool:
             logs.info("CACHE HIT | %s (بدون دانلود دوباره)", track.title)
             return True
 
-    # ۲) دانلود جدید (از طریق پروکسی)
+    # ۲) بازیابی از آرشیو کانال (اگر آهنگ قبلاً آنجا ذخیره شده) — سریع، بدون یوتیوب
+    try:
+        from bot import channel
+        rec = channel.archive_lookup(video_id=vid, query=(track.query or track.title))
+        if rec:
+            path = await channel.archive_download(rec, DOWNLOAD_DIR)
+            if path and os.path.isfile(path):
+                track.local_path = path
+                logs.info("ARCHIVE HIT | %s (از کانال، بدون یوتیوب)", track.title)
+                if vid:
+                    db.cache_put(vid, path, rec.get("title", track.title),
+                                 int(rec.get("duration") or 0), track.is_video)
+                    _prune_cache()
+                return True
+    except Exception as e:  # noqa: BLE001
+        logs.debug("archive lookup: %s", e)
+
+    # ۳) دانلود جدید (از طریق پروکسی یوتیوب)
     query = track.query or track.webpage_url or track.title
     try:
         with logs.stage("DOWNLOAD", title=track.title, video=track.is_video):
@@ -144,6 +161,15 @@ async def _ensure_local_file(track: Track) -> bool:
                 db.cache_put(vid, path, info.get("title", track.title),
                              int(info.get("duration") or 0), track.is_video)
                 _prune_cache()
+            # آپلود به آرشیو کانال برای دفعات بعد (در پس‌زمینه، بدون بلاک پخش)
+            try:
+                from bot import channel
+                asyncio.create_task(channel.archive_store(
+                    path, vid, query, info.get("title", track.title),
+                    int(info.get("duration") or 0), track.is_video,
+                ))
+            except Exception as e:  # noqa: BLE001
+                logs.debug("archive store schedule: %s", e)
             return True
         logs.warn("DOWNLOAD: فایل ساخته نشد | %s", track.title)
         return False

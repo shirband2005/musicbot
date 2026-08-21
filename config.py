@@ -22,6 +22,13 @@ STRING_SESSION = os.environ.get("STRING_SESSION", "").strip()
 # آیدی عددی مالک؛ از env خوانده می‌شود. اگر تنظیم نشده باشد، مقدار پیش‌فرض شناخته‌شده.
 OWNER_ID = _int("OWNER_ID", 8406519786)
 
+# --- کانال‌ها (اختیاری) ---
+# کانال لاگ: رویدادهای مهم ربات (روشن/خاموش، گروه جدید، خطا).
+LOG_CHANNEL = _int("LOG_CHANNEL")
+# کانال آرشیو آهنگ: هر آهنگ دانلودشده اینجا ذخیره می‌شود تا دفعه بعد بدون
+# دانلود از یوتیوب، مستقیم از تلگرام بازیابی شود. (بهتر است خصوصی باشد.)
+ARCHIVE_CHANNEL = _int("ARCHIVE_CHANNEL")
+
 # --- مسیر دیتابیس ---
 # روی ریلوی یک Volume به /data وصل می‌شود تا فایل دیتابیس پایدار بماند.
 DB_PATH = os.environ.get("DB_PATH", "/data/musicbot.db").strip() or "/data/musicbot.db"
