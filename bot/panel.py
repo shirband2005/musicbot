@@ -207,7 +207,10 @@ def panel_keyboard(
             B("آهنگ بعدی", "skip", GREEN, EMO_NEXT),
         ],
         [B("دریافت رسانه", "getmedia", BLUE, EMO_GETMEDIA)],
-        [B(platform_pref.label(chat_id), "platform", BLUE, plat_icon)],
-        [B("بستن پنل", "close", RED, EMO_CLOSE)],
     ]
+    # دکمه پلتفرم فقط وقتی نمایش داده می‌شود که پلتفرم قفل نشده باشد.
+    from bot import group_config as gc
+    if not gc.is_locked(chat_id):
+        rows.append([B(platform_pref.label(chat_id), "platform", BLUE, plat_icon)])
+    rows.append([B("بستن پنل", "close", RED, EMO_CLOSE)])
     return InlineKeyboardMarkup(rows)

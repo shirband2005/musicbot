@@ -20,6 +20,21 @@ def get(chat_id: int) -> str:
     return v if v in _ORDER else BOTH
 
 
+def effective(chat_id: int) -> str:
+    """مود مؤثر با در نظر گرفتن قفل پلتفرمِ گروه.
+
+    اگر مالک پلتفرم را قفل کرده باشد (فقط یوتیوب / فقط ساوندکلاد)، همان قفل
+    برمی‌گردد و انتخاب کاربر نادیده گرفته می‌شود.
+    """
+    from bot import group_config as gc
+    lock = gc.get_lock(chat_id)
+    if lock == gc.LOCK_YOUTUBE:
+        return YOUTUBE
+    if lock == gc.LOCK_SOUNDCLOUD:
+        return SOUNDCLOUD
+    return get(chat_id)
+
+
 def cycle(chat_id: int) -> str:
     """به حالت بعدی می‌رود و ذخیره می‌کند؛ حالت جدید را برمی‌گرداند."""
     cur = get(chat_id)

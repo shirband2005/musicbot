@@ -17,6 +17,7 @@ from pyrogram.types import Message
 import config
 from bot import auth
 from bot import database as db
+from bot import group_config as gc
 from bot import logs
 from bot import platform_pref
 from bot import player
@@ -29,6 +30,20 @@ from bot.queue import Track
 LOGGER = logging.getLogger("musicbot.play")
 
 GROUP_ONLY = "این دستور فقط داخل گروه (با ویس‌چت فعال) کار می‌کند."
+PLAYER_OFF = "🔇 موزیک‌پلیر در این گروه خاموش است."
+
+
+async def _gate(client: Client, message: Message) -> bool:
+    """گارد مشترک: دسترسی + گروه + روشن بودن پلیر. True یعنی می‌توان ادامه داد."""
+    if not await auth.guard_message(client, message):
+        return False
+    if message.chat.type.name == "PRIVATE":
+        await message.reply_text(GROUP_ONLY)
+        return False
+    if not gc.is_enabled(message.chat.id):
+        await message.reply_text(PLAYER_OFF)
+        return False
+    return True
 
 
 def _requester_name(message: Message) -> str:
@@ -86,9 +101,9 @@ async def _play_track(client: Client, message: Message, info: dict, is_video: bo
 
 
 async def _search(chat_id: int, query: str, is_video: bool, status):
-    """جست‌وجو طبق ترجیح پلتفرم. info یا None (با پیام خطا روی status)."""
+    """جست‌وجو طبق ترجیح پلتفرم (با اعمال قفل گروه). info یا None."""
     info = None
-    mode = platform_pref.get(chat_id)  # both | youtube | soundcloud
+    mode = platform_pref.effective(chat_id)  # both | youtube | soundcloud (با قفل)
 
     if not is_video and mode in (platform_pref.BOTH, platform_pref.SOUNDCLOUD):
         try:
@@ -99,7 +114,7 @@ async def _search(chat_id: int, query: str, is_video: bool, status):
             LOGGER.debug("soundcloud search: %s", e)
 
     if info is None and mode == platform_pref.SOUNDCLOUD and not is_video:
-        await status.edit_text("❌ در ساوند کلاد پیدا نشد.\n(می‌توانی پلتفرم را از پنل به یوتیوب تغییر دهی.)")
+        await status.edit_text("❌ در ساوند کلاد پیدا نشد.")
         return None
 
     if info is None:
@@ -114,10 +129,7 @@ async def _search(chat_id: int, query: str, is_video: bool, status):
 
 
 async def _handle_play(client: Client, message: Message, is_video: bool):
-    if not await auth.guard_message(client, message):
-        return
-    if message.chat.type.name == "PRIVATE":
-        await message.reply_text(GROUP_ONLY)
+    if not await _gate(client, message):
         return
 
     # اگر روی یک فایل صوتی/ویدیویی تلگرام ریپلای شده، مستقیم آن را پخش کن
@@ -206,10 +218,7 @@ _AUDIO_KW = {"اهنگ", "آهنگ", "موزیک", "موسیقی", "صدا"}
 
 @Client.on_message(fa_command(["پخش", "بذار", "بنداز"]))
 async def bare_play_cmd(client: Client, message: Message):
-    if not await auth.guard_message(client, message):
-        return
-    if message.chat.type.name == "PRIVATE":
-        await message.reply_text(GROUP_ONLY)
+    if not await _gate(client, message):
         return
 
     # ۱) ریپلای روی فایل صوتی/ویدیویی تلگرام → مستقیم پخش
@@ -255,7 +264,7 @@ async def vplay_cmd(client: Client, message: Message):
 # --- مکث: «مکث» / «توقف» ---
 @Client.on_message(fa_command(["مکث", "توقف"]))
 async def pause_cmd(client: Client, message: Message):
-    if not await auth.guard_message(client, message):
+    if not await _gate(client, message):
         return
     track = q.now_playing(message.chat.id)
     if not track:
@@ -271,7 +280,7 @@ async def pause_cmd(client: Client, message: Message):
 # --- ادامه: «ادامه» / «شروع» ---
 @Client.on_message(fa_command(["ادامه", "شروع"]))
 async def resume_cmd(client: Client, message: Message):
-    if not await auth.guard_message(client, message):
+    if not await _gate(client, message):
         return
     track = q.now_playing(message.chat.id)
     if not track:
@@ -287,7 +296,7 @@ async def resume_cmd(client: Client, message: Message):
 # --- آهنگ بعدی: «رد» / «بعدی» / «آهنگ بعدی» / «اهنگ بعدی» ---
 @Client.on_message(fa_command(["اهنگ بعدی", "آهنگ بعدی", "بعدی", "رد"]))
 async def skip_cmd(client: Client, message: Message):
-    if not await auth.guard_message(client, message):
+    if not await _gate(client, message):
         return
     if q.now_playing(message.chat.id) is None:
         await message.reply_text("چیزی در حال پخش نیست.")
@@ -302,7 +311,7 @@ async def skip_cmd(client: Client, message: Message):
 # --- توقف کامل: «خروج» / «اتمام» ---
 @Client.on_message(fa_command(["خروج", "اتمام"]))
 async def stop_cmd(client: Client, message: Message):
-    if not await auth.guard_message(client, message):
+    if not await _gate(client, message):
         return
     if q.now_playing(message.chat.id) is None:
         await message.reply_text("چیزی در حال پخش نیست.")
@@ -314,7 +323,7 @@ async def stop_cmd(client: Client, message: Message):
 # --- صف: «صف» / «صف پخش» / «لیست» / «لیست پخش» ---
 @Client.on_message(fa_command(["صف پخش", "لیست پخش", "صف", "لیست"]))
 async def queue_cmd(client: Client, message: Message):
-    if not await auth.guard_message(client, message):
+    if not await _gate(client, message):
         return
     cur = q.now_playing(message.chat.id)
     if not cur:
