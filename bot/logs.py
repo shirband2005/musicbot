@@ -39,6 +39,10 @@ def warn(msg: str, *args) -> None:
     LOG.warning("⚠️  %s", msg % args if args else msg)
 
 
+def debug(msg: str, *args) -> None:
+    LOG.debug("🐛 %s", msg % args if args else msg)
+
+
 @contextmanager
 def stage(name: str, chat_id=None, **info):
     """context manager: لاگ خودکار شروع/موفق/ناموفق همراه با زمان اجرا.

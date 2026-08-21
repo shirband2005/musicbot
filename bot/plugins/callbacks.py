@@ -7,6 +7,7 @@ from pyrogram.types import CallbackQuery
 
 from bot import auth
 from bot import call
+from bot import database as db
 from bot import player
 from bot import platform_pref
 from bot import queue as q
@@ -147,21 +148,28 @@ async def panel_cb(client: Client, cq: CallbackQuery):
 
     # --- تغییر پلتفرم جست‌وجو (چرخش بین سه حالت) ---
     elif action == "platform":
-        new_mode = platform_pref.cycle(chat_id)
+        platform_pref.cycle(chat_id)
         await player.refresh_panel(chat_id)
         await cq.answer(f"🎛 {platform_pref.label(chat_id)}")
 
     # --- دریافت رسانه: دانلود فایل mp3 و ارسال آن ---
     elif action == "getmedia":
         await cq.answer("📥 در حال دانلود فایل...", show_alert=False)
-        query = track.query or track.webpage_url or track.title
         status = None
         try:
             status = await client.send_message(chat_id, f"📥 در حال دانلود:\n**{track.title}**")
-            info = await youtube.download_audio(query)
-            path = info["path"]
-            if not os.path.isfile(path):
-                # جست‌وجوی هر فایل با شناسه مشابه در پوشه دانلود
+            # اگر همین آهنگ فایل محلی دارد (پخش فعلی)، دوباره دانلود نکن
+            if track.local_path and os.path.isfile(track.local_path):
+                path = track.local_path
+                info = {"path": path, "title": track.title,
+                        "uploader": "", "duration": track.duration}
+                tmp = False
+            else:
+                query = track.query or track.webpage_url or track.title
+                info = await youtube.download_audio(query, out_dir=player.DOWNLOAD_DIR)
+                path = info["path"]
+                tmp = True
+            if not path or not os.path.isfile(path):
                 raise FileNotFoundError("فایل دانلود پیدا نشد")
             await client.send_audio(
                 chat_id,
@@ -173,11 +181,12 @@ async def panel_cb(client: Client, cq: CallbackQuery):
             )
             if status:
                 await status.delete()
-            # پاک‌سازی فایل پس از ارسال
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            # فقط فایلِ موقتِ همین کار را پاک کن (نه فایل پخش فعلی/کش)
+            if tmp and path not in db.cache_paths():
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
         except Exception as e:  # noqa: BLE001
             LOGGER.warning("getmedia download: %s", e)
             msg = f"❌ خطا در دانلود فایل:\n`{e}`"

@@ -74,7 +74,13 @@ async def main():
                 await player.resume_after_restart(chat_id, track)
                 logs.info("بازیابی پخش | chat=%s | %s", chat_id, track.title)
             except Exception as e:  # noqa: BLE001
-                logs.warn("resume failed | chat=%s: %s", chat_id, e)
+                # ویس‌چت بسته است یا پخش ممکن نشد → وضعیت RAM/دیتابیس این گروه پاک شود
+                # تا گروه به‌اشتباه فکر نکند چیزی در حال پخش است.
+                logs.warn("resume failed | chat=%s: %s — پاک‌سازی وضعیت", chat_id, e)
+                try:
+                    q.clear(chat_id)
+                except Exception:  # noqa: BLE001
+                    pass
     except Exception as e:  # noqa: BLE001
         logs.warn("restore queue: %s", e)
     # یوزرنیم مالک را برای دکمه پشتیبانی از پیش حل کن

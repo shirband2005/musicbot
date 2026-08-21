@@ -152,6 +152,14 @@ def cache_prune(keep: int = 10) -> List[str]:
         return paths
 
 
+def cache_paths() -> List[str]:
+    """مسیر همه فایل‌های موجود در کش (برای محافظت هنگام پاک‌سازی یتیم‌ها)."""
+    with _lock:
+        conn = _connect()
+        rows = conn.execute("SELECT path FROM media_cache").fetchall()
+        return [r["path"] for r in rows]
+
+
 # --- گروه‌های سرو شده ---
 def add_chat(chat_id: int) -> None:
     with _lock:

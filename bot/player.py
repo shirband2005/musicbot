@@ -18,7 +18,6 @@ from bot.panel import (
     cover_file,
     cover_is_animation,
     cover_static_file,
-    has_cover,
     panel_entities,
     panel_keyboard,
     panel_text,
@@ -115,7 +114,7 @@ async def _ensure_local_file(track: Track) -> bool:
                 if fresh and fresh.get("stream_url"):
                     track.stream_url = fresh["stream_url"]
             except Exception as e:  # noqa: BLE001
-                logs.debug("sc refresh: %s", e) if hasattr(logs, "debug") else None
+                logs.debug("sc refresh: %s", e)
         return bool(track.stream_url)
 
     # یوتیوب: اگر فایل قبلاً دانلود شده (تاریخچه) فوری پخش کن
@@ -165,15 +164,15 @@ def _prune_cache() -> None:
             except OSError:
                 pass
     except Exception as e:  # noqa: BLE001
-        logs.debug("prune cache: %s", e) if hasattr(logs, "debug") else None
+        logs.debug("prune cache: %s", e)
 
 
 def _cleanup_orphans() -> None:
     """فایل‌های یتیمِ پوشه دانلود را پاک می‌کند تا Volume پر نشود.
 
-    فایل‌هایی که در کش دیتابیس نیستند و در حال حاضر توسط هیچ گروهی پخش نمی‌شوند
-    و از یک آستانه قدیمی‌ترند حذف می‌شوند. همچنین اگر کل پوشه از سقف حجمی بگذرد،
-    قدیمی‌ترین فایل‌های بی‌استفاده حذف می‌شوند (LRU بر اساس mtime).
+    فایل‌هایی که (الف) در کش دیتابیس نیستند، (ب) در حال پخش نیستند، و (ج) از یک
+    آستانه قدیمی‌ترند حذف می‌شوند. فایل‌های کش‌شده هرگز اینجا حذف نمی‌شوند (کش خودش
+    با _prune_cache مدیریت می‌شود).
     """
     try:
         d = DOWNLOAD_DIR
@@ -183,11 +182,16 @@ def _cleanup_orphans() -> None:
         min_age = int(os.environ.get("ORPHAN_MIN_AGE", "1800"))  # ۳۰ دقیقه
         import time as _t
         now = _t.time()
-        # مسیرهای در حال استفاده (پخش فعلی هر گروه)
-        in_use = set()
+        # مسیرهای محافظت‌شده: پخش فعلی هر گروه + همه فایل‌های داخل کش دیتابیس
+        protected = set()
         for t in q._now_playing.values():  # noqa: SLF001
             if t.local_path:
-                in_use.add(os.path.abspath(t.local_path))
+                protected.add(os.path.abspath(t.local_path))
+        try:
+            for p in db.cache_paths():
+                protected.add(os.path.abspath(p))
+        except Exception:  # noqa: BLE001
+            pass
         entries = []
         total = 0
         for name in os.listdir(d):
@@ -200,23 +204,20 @@ def _cleanup_orphans() -> None:
                 continue
             total += st.st_size
             entries.append((p, st.st_size, st.st_mtime))
-        # حذف یتیم‌های قدیمی که در حال پخش نیستند
+        # حذف یتیم‌های قدیمی که محافظت‌شده نیستند
         for p, size, mtime in entries:
-            if p in in_use:
+            if p in protected or now - mtime < min_age:
                 continue
-            if now - mtime < min_age:
-                continue
-            # آیا در کش دیتابیس هست؟ (کش خودش با _prune_cache مدیریت می‌شود)
             try:
                 os.remove(p)
                 total -= size
                 logs.info("ORPHAN CLEANUP | حذف %s", os.path.basename(p))
             except OSError:
                 pass
-        # اگر هنوز از سقف بیشتر است، قدیمی‌ترین‌های بی‌استفاده را حذف کن
+        # اگر هنوز از سقف بیشتر است، قدیمی‌ترین‌های غیرمحافظت‌شده را حذف کن
         if total > max_mb * 1024 * 1024:
             for p, size, mtime in sorted(entries, key=lambda e: e[2]):
-                if p in in_use or not os.path.isfile(p):
+                if p in protected or not os.path.isfile(p):
                     continue
                 try:
                     os.remove(p)
@@ -251,6 +252,8 @@ async def resume_after_restart(chat_id: int, track: Track) -> None:
     دیتابیس می‌ماند تا کاربر دوباره پخش کند (سکوت به‌جای کرش).
     """
     try:
+        # زمان‌بندی نوار پیشرفت را از نو شروع کن (started_at ذخیره‌شده منقضی است)
+        track.mark_started()
         await _ensure_local_file(track)
         await call.play(chat_id, _stream(track))
         await _send_panel(chat_id, new=True)
