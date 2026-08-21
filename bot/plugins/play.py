@@ -283,6 +283,12 @@ async def bare_play_cmd(client: Client, message: Message):
     if not await _gate(client, message):
         return
 
+    # ۰) «پخش رندوم» → حالت رندوم و پخش تصادفی (قبل از هر چیز)
+    args0 = message.command[1:]
+    if args0 and _norm(args0[0]) == "رندوم":
+        await _start_random(client, message)
+        return
+
     # ۱) ریپلای روی فایل صوتی/ویدیویی تلگرام → مستقیم پخش
     if await _play_telegram_file(client, message):
         return
@@ -321,6 +327,41 @@ async def play_cmd(client: Client, message: Message):
 @Client.on_message(fa_command(["پخش فیلم", "پخش ویدیو"]))
 async def vplay_cmd(client: Client, message: Message):
     await _handle_play(client, message, is_video=True)
+
+
+# --- شروع پخش رندوم: حالت را رندوم کن و فوراً یک آهنگ تصادفی پخش کن ---
+def _norm(w: str) -> str:
+    from bot.facmd import normalize
+    return normalize(w)
+
+
+async def _start_random(client: Client, message: Message):
+    from bot import group_config as gc
+    gc.set_mode(message.chat.id, gc.MODE_RANDOM)
+    db.add_chat(message.chat.id)
+    status = await message.reply_text("🔀 پخش رندوم روشن شد — در حال انتخاب آهنگ...")
+    try:
+        with logs.stage("RANDOM_PLAY", message.chat.id):
+            await player.play_random(message.chat.id)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.error("random play error: %s", e)
+        err = str(e)
+        if "GROUPCALL" in err.upper() or "no active" in err.lower():
+            await status.edit_text("❌ ابتدا ویس‌چت گروه را روشن کنید.")
+        else:
+            await status.edit_text(f"❌ خطا در پخش رندوم:\n`{str(e)[:200]}`")
+        return
+    if q.now_playing(message.chat.id) is None:
+        await status.edit_text("❌ آرشیو خالی است. اول چند آهنگ به کانال آرشیو اضافه/پخش کن.")
+    else:
+        await status.delete()
+
+
+@Client.on_message(fa_command(["شروع پخش رندوم", "پخش رندوم", "رندوم"]))
+async def random_cmd(client: Client, message: Message):
+    if not await _gate(client, message):
+        return
+    await _start_random(client, message)
 
 
 # --- مکث: «مکث» / «توقف موقت» (فقط نگه‌داشتن موقت، در کال می‌ماند) ---
