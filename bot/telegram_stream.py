@@ -92,14 +92,15 @@ async def build_stream(chat_id: int, message) -> Stream:
     _active[chat_id] = {"message": message}
     url = f"http://{_HOST}:{_PORT}/stream/{chat_id}"
 
-    # دستورهای ffmpeg که خروجی خام برای ntgcalls تولید می‌کنند (۳۶۰p).
+    # دستورهای ffmpeg که خروجی خام برای ntgcalls تولید می‌کنند.
     #  - صدا: -vn (بدون decode ویدیوی سنگین x265) → صدا عقب نمی‌ماند
     #  - تصویر: -an (بدون decode صدا)
-    # نکته مهم: منبع SHELL در ntgcalls دستور را خودش پارس می‌کند و اجازه‌ی
-    # کاراکترهای شل (`2>`, `|`, `;` ...) را نمی‌دهد. پس دستور ffmpeg را در یک
-    # اسکریپت wrapper می‌گذاریم و SHELL فقط `bash script` را می‌بیند؛ ریدایرکت
-    # لاگ خطا داخل اسکریپت انجام می‌شود.
-    common = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2"
+    # برای کاهش بار CPU (decode بلادرنگ x265 روی پلن محدود):
+    #   کیفیت ۲۴۰p، فریم‌ریت ۱۵، همه هسته‌ها (-threads 0).
+    # reconnect_at_eof حذف شد تا در پایان از اول شروع نکند (حلقه‌ی از-اول).
+    common = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -threads 0"
+    vparams = os.environ.get("TG_STREAM_VF", "scale=426:240")
+    vfps = os.environ.get("TG_STREAM_FPS", "15")
     vlog = f"/tmp/tgv_{chat_id}.log"
     alog = f"/tmp/tga_{chat_id}.log"
     vsh = f"/tmp/tgv_{chat_id}.sh"
@@ -107,7 +108,7 @@ async def build_stream(chat_id: int, message) -> Stream:
     with open(vsh, "w") as fh:
         fh.write(
             f"#!/bin/bash\nexec ffmpeg {common} -i '{url}' -an -v error "
-            f"-map 0:v:0? -f rawvideo -r 20 -pix_fmt yuv420p -vf scale=640:360 pipe:1 2>{vlog}\n"
+            f"-map 0:v:0? -f rawvideo -r {vfps} -pix_fmt yuv420p -vf {vparams} pipe:1 2>{vlog}\n"
         )
     with open(ash, "w") as fh:
         fh.write(
@@ -119,7 +120,7 @@ async def build_stream(chat_id: int, message) -> Stream:
     vcmd = f"bash {vsh}"
     acmd = f"bash {ash}"
     audio = AudioStream(MediaSource.SHELL, acmd, AudioParameters(48000, 2))
-    video = VideoStream(MediaSource.SHELL, vcmd, VideoParameters(640, 360, 20))
+    video = VideoStream(MediaSource.SHELL, vcmd, VideoParameters(426, 240, int(vfps)))
     # لاگ ffmpeg را چند ثانیه بعد به stdout بفرست (برای دیباگ از راه دور)
     asyncio.create_task(_report_logs(chat_id, alog, vlog))
     return Stream(microphone=audio, camera=video)
