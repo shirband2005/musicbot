@@ -171,11 +171,17 @@ async def _start_payment(client, cq, chat_id, tier, months, method):
         toman = sub.get_price(tier, months, "toman")
         addr = db.pay_get("crypto_addr", "(تنظیم نشده)")
         net = db.pay_get("crypto_net", "TRON (TRC20)")
+        rate = int(db.pay_get("usdt_rate", "0") or 0)
         db.order_create(oid, buyer, chat_id, tier, months, toman, "crypto")
+        usdt_line = ""
+        if rate > 0:
+            from bot import crypto_verify as cv
+            usdt_line = f"(≈ **{cv.toman_to_usdt(toman, rate)} USDT**)\n"
         await cq.message.reply_text(
             f"🪙 **پرداخت کریپتو ({net})**\n\n"
-            f"معادل **{toman:,} تومان** USDT به این آدرس بفرست:\n`{addr}`\n\n"
-            f"سپس **هش تراکنش (TxID)** را همین‌جا ریپلای کن.\n"
+            f"معادل **{toman:,} تومان** {usdt_line}را به‌صورت **USDT** به این آدرس بفرست:\n`{addr}`\n\n"
+            f"سپس **هش تراکنش (TxID)** را همین‌جا ریپلای کن (روی همین پیام).\n"
+            f"تأیید خودکار است؛ اگر نشد، دستی بررسی می‌شود.\n"
             f"کد سفارش: `{oid}`",
         )
         await cq.answer()
@@ -198,6 +204,32 @@ async def receipt_handler(client: Client, message: Message):
     order = db.order_get(oid)
     if not order or order["status"] != "pending":
         return
+
+    # --- کریپتو: تلاش برای تأیید خودکار با TronGrid ---
+    if order["method"] == "crypto" and (message.text or ""):
+        txid = message.text.strip()
+        # ضد استفاده‌ی دوباره: این TxID قبلاً برای سفارش دیگری ثبت نشده باشد
+        if _txid_used(txid, oid):
+            await message.reply_text("⛔️ این تراکنش قبلاً استفاده شده است.")
+            return
+        wallet = db.pay_get("crypto_addr", "")
+        rate = int(db.pay_get("usdt_rate", "0") or 0)
+        if wallet and rate > 0:
+            from bot import crypto_verify as cv
+            need = cv.toman_to_usdt(order["amount"], rate)
+            status = await message.reply_text("🔍 در حال بررسی خودکار تراکنش...")
+            ok, reason = await cv.verify_usdt(txid, wallet, need)
+            if ok:
+                db.order_set_status(oid, "paid", ref=txid)
+                await _fulfill(client, order)
+                await status.edit_text(f"{reason}\n✅ اشتراک گروه فعال شد!")
+                return
+            # ناموفق → پیام + سقوط به تأیید دستی
+            await status.edit_text(
+                f"⚠️ تأیید خودکار نشد: {reason}\n"
+                "رسید/تراکنش برای بررسی دستی به مدیریت ارسال شد.")
+            db.order_set_status(oid, "pending", ref=txid)  # ذخیره‌ی txid برای مالک
+
     # به مالک بفرست با دکمه‌های تأیید/رد
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ تأیید", callback_data=f"ordr|ok|{oid}"),
@@ -214,6 +246,15 @@ async def receipt_handler(client: Client, message: Message):
         await message.reply_text("✅ رسید برای بررسی ارسال شد. منتظر تأیید بمان.")
     except Exception as e:  # noqa: BLE001
         LOGGER.warning("forward receipt: %s", e)
+
+
+def _txid_used(txid: str, current_oid: str) -> bool:
+    """آیا این TxID قبلاً برای سفارش paid دیگری استفاده شده؟ (ضد تقلب)."""
+    txid = txid.strip()
+    for o in db.orders_all_paid():
+        if o["id"] != current_oid and (o.get("ref") or "").strip() == txid:
+            return True
+    return False
 
 
 # --- تأیید/رد سفارش توسط مالک ---

@@ -346,6 +346,24 @@ def test_orders_flow(fresh_db):
     assert len(db.orders_pending()) == 0
 
 
+def test_txid_reuse_guard(fresh_db):
+    """یک TxID کریپتو نباید دوبار برای سفارش‌های مختلف paid شود."""
+    from bot import database as db
+    db.order_create("o1", 1, -1, "pro", 1, 100, "crypto")
+    db.order_set_status("o1", "paid", ref="TX_ABC")
+    paid = db.orders_all_paid()
+    assert any(o["ref"] == "TX_ABC" for o in paid)
+
+
+def test_usdt_conversion():
+    """تبدیل تومان به USDT با نرخ."""
+    from bot import crypto_verify as cv
+    from decimal import Decimal
+    assert cv.toman_to_usdt(100000, 100000) == Decimal("1.00")
+    assert cv.toman_to_usdt(250000, 100000) == Decimal("2.50")
+    assert cv.toman_to_usdt(100000, 0) == Decimal("0")
+
+
 # ---------------- migration از settings قدیمی ----------------
 def test_migration_from_settings(tmp_path, monkeypatch):
     import sqlite3

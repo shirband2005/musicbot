@@ -604,6 +604,16 @@ def orders_pending() -> list:
         return [dict(r) for r in rows]
 
 
+def orders_all_paid() -> list:
+    """سفارش‌های پرداخت‌شده (برای بررسی استفاده‌ی دوباره‌ی TxID کریپتو)."""
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT id, ref FROM orders WHERE status='paid' AND ref!=''"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 # --- تنظیمات پرداخت (key/value) ---
 def pay_get(key: str, default: str = "") -> str:
     with _lock:
