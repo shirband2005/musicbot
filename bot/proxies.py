@@ -3,10 +3,10 @@
 پروکسی‌ها از منابع زیر خوانده می‌شوند (به‌ترتیب اولویت):
   1. متغیر محیطی PROXY_LIST      (خطوط ip:port:user:pass یا http://user:pass@ip:port)
   2. متغیر محیطی PROXY_LIST_URL  (URL یک لیست متنی)
-  3. لیست پیش‌فرض تعبیه‌شده (_BUILTIN) — همان ۱۰ پروکسی Webshare
 
 پروکسی موفق ابتدای صف می‌رود؛ پروکسی خراب موقتاً تحریم می‌شود.
-پروکسی‌های عمومی رایگان حذف شده‌اند (همه ۴۰۷/کند بودند).
+نکته امنیتی: هیچ پروکسی‌ای در کد hardcode نمی‌شود (ریپو عمومی است).
+پروکسی‌ها فقط از env می‌آیند و در RESTORE_BLOB رمزنگاری‌شده حمل می‌شوند.
 """
 import os
 import threading
@@ -16,21 +16,6 @@ from collections import OrderedDict
 from typing import List, Optional
 
 from bot import logs
-
-# --- لیست پیش‌فرض تعبیه‌شده: ۱۰ پروکسی Webshare (ip:port:user:pass) ---
-# در صورت نیاز به تعویض، متغیر محیطی PROXY_LIST را ست کن (این لیست را override می‌کند).
-_BUILTIN = [
-    "0.0.0.0:6754:REDACTED:REDACTED",
-    "0.0.0.0:7684:REDACTED:REDACTED",
-    "0.0.0.0:6014:REDACTED:REDACTED",
-    "0.0.0.0:6462:REDACTED:REDACTED",
-    "0.0.0.0:6641:REDACTED:REDACTED",
-    "0.0.0.0:6361:REDACTED:REDACTED",
-    "0.0.0.0:6370:REDACTED:REDACTED",
-    "0.0.0.0:6095:REDACTED:REDACTED",
-    "0.0.0.0:5611:REDACTED:REDACTED",
-    "0.0.0.0:6185:REDACTED:REDACTED",
-]
 
 _lock = threading.Lock()
 # پروکسی‌های در دسترس: OrderedDict برای حفظ اولویت (موفق‌ها اول)
@@ -75,7 +60,7 @@ def _fetch_url(url: str) -> List[str]:
 
 
 def _collect() -> List[str]:
-    """جمع‌آوری پروکسی‌ها از env یا لیست تعبیه‌شده."""
+    """جمع‌آوری پروکسی‌ها از env (PROXY_LIST یا PROXY_LIST_URL)."""
     raw = os.environ.get("PROXY_LIST", "").strip()
     if raw:
         return _parse_lines(raw)
@@ -87,7 +72,7 @@ def _collect() -> List[str]:
                 found += _fetch_url(u.strip())
         if found:
             return found
-    return _parse_lines("\n".join(_BUILTIN))
+    return []
 
 
 def refresh(force: bool = False) -> int:
