@@ -81,9 +81,17 @@ def set_muted(chat_id: int, val: bool) -> None:
 
 
 def _stream(track: Track) -> MediaStream:
+    # استریم مستقیم فایل حجیم تلگرام: منبع یک FIFO است که یوزربات پرش می‌کند.
+    # کیفیت ۳۶۰p قفل می‌شود (فایل حجیم، پخش روان‌تر).
+    src = track.local_path or track.stream_url
+    if track.source == "telegram_stream":
+        return MediaStream(
+            src,
+            audio_parameters=AudioQuality.MEDIUM,
+            video_parameters=VideoQuality.SD_360p,
+        )
     # همیشه از فایل محلی پخش کن (لینک استریم یوتیوب به IP پروکسی قفل است
     # و ffmpeg از IP سرور نمی‌تواند آن را بگیرد → سکوت در کال).
-    src = track.local_path or track.stream_url
     if track.is_video:
         return MediaStream(
             src,
@@ -99,6 +107,24 @@ def _stream(track: Track) -> MediaStream:
 
 async def _ensure_local_file(track: Track) -> bool:
     """آماده‌سازی منبع پخش (ساوندکلاد استریم/آرشیو، یوتیوب دانلود/کش/آرشیو)."""
+    # استریم مستقیم فایل حجیم تلگرام: یوزربات فایل را تیکه‌تیکه در FIFO می‌ریزد.
+    if track.source == "telegram_stream":
+        from bot import assistant
+        from bot import telegram_stream as tgs
+        try:
+            # پیام حاوی فایل را از دید یوزربات کمکی بگیر (باید در آن چت عضو باشد)
+            msg = await assistant.get_messages(track.tg_chat_id, track.tg_msg_id)
+            if not msg:
+                logs.warn("tgstream: پیام یافت نشد (chat=%s msg=%s)", track.tg_chat_id, track.tg_msg_id)
+                return False
+            fifo = await tgs.start_feeder(track.tg_chat_id, msg)
+            track.local_path = fifo
+            logs.info("TG STREAM | %s (استریم مستقیم از تلگرام، بدون دانلود)", track.title)
+            return True
+        except Exception as e:  # noqa: BLE001
+            logs.warn("tgstream setup failed: %s", e)
+            return False
+
     # ساوندکلاد مستقیم استریم می‌شود (IP دیتاسنتر بلاک نیست)
     if track.source == "soundcloud":
         # ۰) اگر همین آهنگ قبلاً در آرشیو کانال هست → از تلگرام بگیر و از فایل پخش کن
@@ -333,6 +359,7 @@ async def resume_after_restart(chat_id: int, track: Track) -> None:
 
 
 async def skip(chat_id: int) -> Optional[Track]:
+    _stop_tg_stream(chat_id)
     nxt = q.pop_next(chat_id)
     if nxt is None:
         await stop(chat_id)
@@ -344,6 +371,7 @@ async def skip(chat_id: int) -> Optional[Track]:
 
 
 async def previous(chat_id: int) -> Optional[Track]:
+    _stop_tg_stream(chat_id)
     prev = q.pop_previous(chat_id)
     if prev is None:
         return None
@@ -353,7 +381,17 @@ async def previous(chat_id: int) -> Optional[Track]:
     return prev
 
 
+def _stop_tg_stream(chat_id: int) -> None:
+    """اگر استریم مستقیم تلگرامی فعالی هست، feeder و FIFO را پاک کن."""
+    try:
+        from bot import telegram_stream as tgs
+        tgs.stop_previous(chat_id)
+    except Exception as e:  # noqa: BLE001
+        logs.debug("stop tg stream: %s", e)
+
+
 async def stop(chat_id: int) -> None:
+    _stop_tg_stream(chat_id)
     q.clear(chat_id)
     _cancel_updater(chat_id)
     _muted.pop(chat_id, None)

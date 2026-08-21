@@ -175,8 +175,16 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
 
 
 # --- ریپلای روی فایل صوتی/ویدیویی: افزودن به صف یا پخش ---
+# آستانه: فایل‌های حجیم (بالای این حد) به‌جای دانلود، مستقیم از تلگرام استریم می‌شوند.
+_TG_STREAM_THRESHOLD = int(os.environ.get("TG_STREAM_THRESHOLD_MB", "50")) * 1024 * 1024
+
+
 async def _play_telegram_file(client: Client, message: Message) -> bool:
-    """اگر روی یک فایل صوتی/ویدیویی ریپلای شده، آن را پخش/به صف می‌کند. True اگر انجام شد."""
+    """اگر روی یک فایل صوتی/ویدیویی ریپلای شده، آن را پخش/به صف می‌کند. True اگر انجام شد.
+
+    - فایل کوچک (زیر آستانه): دانلود و پخش از فایل محلی (پایدار).
+    - فایل حجیم (بالای آستانه): استریم مستقیم توسط یوزربات کمکی (بدون دانلود کامل).
+    """
     reply = message.reply_to_message
     media = None
     if reply:
@@ -185,6 +193,42 @@ async def _play_telegram_file(client: Client, message: Message) -> bool:
         return False
 
     db.add_chat(message.chat.id)
+    size = getattr(media, "file_size", 0) or 0
+    title = getattr(media, "title", None) or getattr(media, "file_name", None) or "فایل تلگرام"
+    dur = getattr(media, "duration", 0) or 0
+    is_video = bool(reply.video or (reply.document and "video" in (getattr(media, "mime_type", "") or "")))
+
+    # --- مسیر استریم مستقیم برای فایل حجیم (بدون دانلود) ---
+    if size >= _TG_STREAM_THRESHOLD:
+        status = await message.reply_text(
+            f"📡 فایل حجیم ({size // (1024*1024)} مگ) — استریم مستقیم با کیفیت ۳۶۰p...\n"
+            "بدون دانلود، همه با اینترنت سرور."
+        )
+        track = Track(
+            title=title, stream_url="", webpage_url="",
+            duration=dur, duration_text=_fmt_dur(dur), thumbnail=None,
+            requester=_requester_name(message), is_video=True,
+            query="", video_id="", source="telegram_stream",
+            tg_chat_id=message.chat.id, tg_msg_id=reply.id,
+        )
+        try:
+            with logs.stage("CALL_STREAM", message.chat.id, title=title):
+                pos = await player.play_or_queue(message.chat.id, track)
+        except Exception as e:  # noqa: BLE001
+            LOGGER.error("tg stream playback error: %s", e)
+            err = str(e)
+            if "GROUPCALL" in err.upper() or "no active" in err.lower():
+                await status.edit_text("❌ ابتدا ویس‌چت گروه را روشن کنید.")
+            else:
+                await status.edit_text(f"❌ خطا در استریم:\n`{str(e)[:200]}`")
+            return True
+        if pos == 0:
+            await status.delete()
+        else:
+            await status.edit_text(f"✅ به صف اضافه شد (موقعیت {pos}):\n**{title}**")
+        return True
+
+    # --- مسیر دانلود برای فایل کوچک ---
     status = await message.reply_text("⬇️ در حال آماده‌سازی فایل...")
     try:
         os.makedirs(player.DOWNLOAD_DIR, exist_ok=True)
@@ -194,9 +238,6 @@ async def _play_telegram_file(client: Client, message: Message) -> bool:
         await status.edit_text(f"❌ دانلود فایل ناموفق:\n`{str(e)[:200]}`")
         return True
 
-    title = getattr(media, "title", None) or getattr(media, "file_name", None) or "فایل تلگرام"
-    dur = getattr(media, "duration", 0) or 0
-    is_video = bool(reply.video)
     track = Track(
         title=title, stream_url=path, webpage_url="",
         duration=dur, duration_text=_fmt_dur(dur), thumbnail=None,
