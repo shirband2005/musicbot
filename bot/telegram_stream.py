@@ -37,21 +37,31 @@ _state: dict = {}
 _runner = None
 _started = False
 
-_QUEUE_MAX = 64  # حداکثر تیکه در صف هر مشترک (بافر ~۶۴ مگ)
+_QUEUE_MAX = 256  # حداکثر تیکه در صف هر مشترک (بافر ~۲۵۶ مگ برای جلوگیری از قطع)
 
 
 class _Broadcast:
-    """یک reader که فایل تلگرام را یک بار می‌خواند و به چند subscriber می‌دهد."""
+    """یک reader که فایل تلگرام را یک بار می‌خواند و به چند subscriber می‌دهد.
 
-    def __init__(self, message):
+    نکته‌ی حیاتی: reader تا وقتی **هر دو** مصرف‌کننده (ffmpeg صدا و تصویر) وصل
+    نشده‌اند شروع نمی‌شود؛ وگرنه مصرف‌کننده‌ای که دیر وصل شود **هدر کانتینر
+    (ابتدای فایل)** را از دست می‌دهد و نمی‌تواند استریم را پارس کند.
+    """
+
+    def __init__(self, message, expected: int = 2):
         self.message = message
         self.subscribers: list = []
         self.reader_task = None
         self.started = False
+        self.expected = expected
+        self._ready = asyncio.Event()
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAX)
         self.subscribers.append(q)
+        # وقتی همه‌ی مصرف‌کننده‌های مورد انتظار وصل شدند، به reader اجازه‌ی شروع بده
+        if len(self.subscribers) >= self.expected:
+            self._ready.set()
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
@@ -64,16 +74,22 @@ class _Broadcast:
             self.reader_task = asyncio.create_task(self._read())
 
     async def _read(self) -> None:
+        # منتظر بمان تا هر دو مصرف‌کننده وصل شوند (حداکثر ۱۰ ثانیه)
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            LOGGER.warning("tgstream: فقط %d مصرف‌کننده وصل شد، بدون انتظار شروع می‌شود",
+                           len(self.subscribers))
         total = 0
         try:
             async for chunk in assistant.stream_media(self.message):
                 if not chunk:
                     continue
                 total += len(chunk)
-                # به همه‌ی مشترک‌های فعلی بده (هر کدام صف خودش)
+                # به همه‌ی مشترک‌های فعلی بده (هر کدام صف خودش)؛ backpressure
+                # از طریق await put باعث هماهنگی صدا و تصویر می‌شود.
                 for q in list(self.subscribers):
                     try:
-                        # اگر صف پر است، منتظر بمان (کندترین مصرف‌کننده تعیین‌کننده است)
                         await q.put(chunk)
                     except Exception:  # noqa: BLE001
                         pass
@@ -83,7 +99,6 @@ class _Broadcast:
         except Exception as e:  # noqa: BLE001
             LOGGER.warning("tgstream broadcast error (%d bytes): %s", total, e)
         finally:
-            # سیگنال پایان به همه‌ی مشترک‌ها (None = EOF)
             for q in list(self.subscribers):
                 try:
                     q.put_nowait(None)
@@ -154,10 +169,10 @@ async def build_stream(chat_id: int, message) -> Stream:
     _state[chat_id] = {"broadcast": _Broadcast(message)}
     url = f"http://{_HOST}:{_PORT}/stream/{chat_id}"
 
-    # کیفیت قابل تنظیم (پیش‌فرض ۳۶۰p/۲۰fps). برای CPU ضعیف: TG_STREAM_VF/FPS.
-    vparams = os.environ.get("TG_STREAM_VF", "scale=640:360")
-    vfps = int(os.environ.get("TG_STREAM_FPS", "20"))
-    vw, vh = 640, 360
+    # کیفیت ثابت ۲۴۰p / ۱۵fps — اولویت با روانی پخش (قابل override با env).
+    vparams = os.environ.get("TG_STREAM_VF", "scale=426:240")
+    vfps = int(os.environ.get("TG_STREAM_FPS", "15"))
+    vw, vh = 426, 240
     try:
         if vparams.startswith("scale="):
             wh = vparams.split("=", 1)[1].split(":")
@@ -165,7 +180,11 @@ async def build_stream(chat_id: int, message) -> Stream:
     except Exception:  # noqa: BLE001
         pass
 
-    common = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -threads 0"
+    # فلگ‌های reconnect برای HTTP لوکال (جلوگیری از قطع وسط پخش) + بافر ورودی.
+    common = (
+        "-reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 0 "
+        "-reconnect_delay_max 5 -rw_timeout 30000000 -threads 0"
+    )
     vlog = f"/tmp/tgv_{chat_id}.log"
     alog = f"/tmp/tga_{chat_id}.log"
     vsh = f"/tmp/tgv_{chat_id}.sh"
