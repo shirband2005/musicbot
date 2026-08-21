@@ -26,6 +26,26 @@ async def _on_archive_audio(client: Client, message: Message):
         LOGGER.debug("archive audio store: %s", e)
 
 
+@Client.on_message(filters.channel & filters.reply & filters.regex(r"^\s*حذف\s*$"))
+async def _on_archive_delete(client: Client, message: Message):
+    """ریپلای «حذف» روی یک آهنگ در کانال آرشیو → حذف آن از دیتابیس."""
+    try:
+        if not config.ARCHIVE_CHANNEL:
+            return
+        if not (message.chat and message.chat.id == config.ARCHIVE_CHANNEL):
+            return
+        target = message.reply_to_message
+        if not target or not getattr(target, "audio", None):
+            return
+        rec = await channel.delete_from_archive(target)
+        if rec:
+            await message.reply_text(f"🗑 «{rec.get('title')}» از دیتابیس حذف شد.")
+        else:
+            await message.reply_text("این آهنگ در دیتابیس نبود.")
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("archive delete: %s", e)
+
+
 @Client.on_chat_member_updated()
 async def _on_member_update(client: Client, ev: ChatMemberUpdated):
     """وقتی وضعیت خودِ ربات در یک گروه عوض شد، در کانال لاگ اعلام کن."""

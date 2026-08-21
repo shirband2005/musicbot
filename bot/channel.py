@@ -13,6 +13,7 @@
 import logging
 import os
 import time
+from typing import Optional
 
 import config
 from bot import app
@@ -110,12 +111,7 @@ async def archive_download(rec: dict, out_dir: str) -> str:
 
 
 async def store_forwarded(message) -> bool:
-    """آهنگ فوروارد/آپلودشده در خودِ کانال آرشیو را در دیتابیس ثبت می‌کند.
-
-    وقتی مالک یک فایل صوتی را به کانال آرشیو فوروارد/آپلود می‌کند، این تابع
-    file_id و عنوان را در channel_songs ذخیره می‌کند تا در جست‌وجو و پخش رندوم
-    استفاده شود. کلید بر اساس عنوان نرمال‌شده است.
-    """
+    """آهنگ فوروارد/آپلودشده در خودِ کانال آرشیو را در دیتابیس ثبت می‌کند."""
     audio = getattr(message, "audio", None)
     if not audio:
         return False
@@ -138,6 +134,25 @@ async def store_forwarded(message) -> bool:
     except Exception:  # noqa: BLE001
         pass
     return True
+
+
+async def delete_from_archive(message) -> Optional[dict]:
+    """آهنگی که رویش (در کانال آرشیو) ریپلای شده را از دیتابیس حذف می‌کند.
+
+    بر اساس message_id همان پیام در کانال آرشیو کار می‌کند. رکورد حذف‌شده یا None.
+    """
+    rec = db.archive_delete(message_id=message.id)
+    if rec:
+        LOGGER.info("ARCHIVE DELETE | %s (msg=%s)", rec.get("title"), message.id)
+        try:
+            await log(
+                "🗑 **آهنگ از دیتابیس حذف شد**\n"
+                f"• عنوان: {rec.get('title')}\n"
+                f"• مجموع آرشیو: {db.archive_count()} آهنگ"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return rec
 
 
 # ---------------- بکاپ دیتابیس ----------------

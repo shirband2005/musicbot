@@ -119,6 +119,11 @@ def panel_content(track: Track, volume: int = 100, muted: bool = False):
     status_txt = "متوقف موقت" if track.paused else "در حال پخش"
     kind = "ویدیو" if track.is_video else "آهنگ"
     vol_txt = "بیصدا" if muted else f"{volume}%"
+    # پلتفرم پخش (منبع واقعی که آهنگ از آن آمده)
+    _src_map = {"archive": "آرشیو", "soundcloud": "ساوندکلاد",
+                "youtube": "یوتیوب", "telegram": "تلگرام",
+                "telegram_stream": "تلگرام"}
+    src_txt = _src_map.get(getattr(track, "source", "youtube"), "یوتیوب")
 
     segs = [
         ("🎧 ", None, False),
@@ -134,6 +139,9 @@ def panel_content(track: Track, volume: int = 100, muted: bool = False):
         (f" نوع : {kind} ", None, False),
         (_C_NOTE, EMO_SONG if not track.is_video else None, False),
         ("\n", None, False),
+        # پلتفرم پخش (منبع)
+        (_C_DOT, EMO_BULLET2, False),
+        (f" پلتفرم پخش : {src_txt}\n", None, False),
         # میزان صدا
         (_C_DOT, EMO_BULLET1, False),
         (f" میزان صدا : {vol_txt}\n", None, False),

@@ -154,6 +154,7 @@ async def _ensure_local_file(track: Track) -> bool:
                 path = await channel.archive_download(rec, DOWNLOAD_DIR)
                 if path and os.path.isfile(path):
                     track.local_path = path
+                    track.source = "archive"
                     logs.info("ARCHIVE HIT | %s (ساوندکلاد از کانال)", track.title)
                     return True
         except Exception as e:  # noqa: BLE001
@@ -196,6 +197,7 @@ async def _ensure_local_file(track: Track) -> bool:
             path = await channel.archive_download(rec, DOWNLOAD_DIR)
             if path and os.path.isfile(path):
                 track.local_path = path
+                track.source = "archive"
                 logs.info("ARCHIVE HIT | %s (از کانال، بدون یوتیوب)", track.title)
                 if vid:
                     db.cache_put(vid, path, rec.get("title", track.title),

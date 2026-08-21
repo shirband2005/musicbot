@@ -237,6 +237,29 @@ def archive_count() -> int:
         return conn.execute("SELECT COUNT(*) AS c FROM channel_songs").fetchone()["c"]
 
 
+def archive_delete(key: str = "", message_id: int = 0) -> Optional[dict]:
+    """یک آهنگ را از آرشیو حذف می‌کند (با key یا message_id). رکورد حذف‌شده یا None."""
+    with _lock:
+        conn = _connect()
+        if message_id:
+            row = conn.execute(
+                "SELECT key, title, message_id FROM channel_songs WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+        elif key:
+            row = conn.execute(
+                "SELECT key, title, message_id FROM channel_songs WHERE key=?",
+                (key,),
+            ).fetchone()
+        else:
+            return None
+        if not row:
+            return None
+        conn.execute("DELETE FROM channel_songs WHERE key=?", (row["key"],))
+        conn.commit()
+        return {"key": row["key"], "title": row["title"], "message_id": row["message_id"]}
+
+
 def archive_random(audio_only: bool = True) -> Optional[dict]:
     """یک آهنگ تصادفی از آرشیو کانال برمی‌گرداند (برای حالت پخش رندوم)."""
     with _lock:
