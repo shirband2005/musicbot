@@ -33,3 +33,20 @@ def set_lock(chat_id: int, lock: str) -> None:
 
 def is_locked(chat_id: int) -> bool:
     return get_lock(chat_id) != LOCK_NONE
+
+
+# ---- حالت پخش برای گروه: queue | repeat | random ----
+MODE_QUEUE = "queue"    # پخش صف: تمام شد → بعدی (پیش‌فرض)
+MODE_REPEAT = "repeat"  # پخش تکرار: همان آهنگ دوباره
+MODE_RANDOM = "random"  # پخش رندوم: آهنگ تصادفی از آرشیو کانال
+_MODES = (MODE_QUEUE, MODE_REPEAT, MODE_RANDOM)
+
+
+def get_mode(chat_id: int) -> str:
+    v = db.group_get(chat_id)["mode"]
+    return v if v in _MODES else MODE_QUEUE
+
+
+def set_mode(chat_id: int, mode: str) -> None:
+    if mode in _MODES:
+        db.group_set(chat_id, mode=mode)

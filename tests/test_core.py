@@ -48,7 +48,7 @@ def test_special_users_crud(fresh_db):
 def test_group_settings_defaults_and_update(fresh_db):
     db = fresh_db
     d = db.group_get(-100)
-    assert d == {"enabled": 0, "lock": "none", "platform": "both"}
+    assert d == {"enabled": 0, "lock": "none", "platform": "both", "mode": "queue"}
     db.group_set(-100, enabled=1)
     assert db.group_get(-100)["enabled"] == 1
     db.group_set(-100, lock="youtube", platform="youtube")
@@ -260,6 +260,33 @@ def test_channel_norm_key(fresh_db):
     k = channel._norm_key("", "آهنگ Test")
     assert k.startswith("q:")
     assert "اهنگ" in k
+
+
+# ---------------- حالت پخش گروه (mode: queue/repeat/random) ----------------
+def test_group_mode(fresh_db):
+    import bot.group_config as gc
+    import importlib
+    importlib.reload(gc)
+    cid = -100777
+    # پیش‌فرض queue
+    assert gc.get_mode(cid) == gc.MODE_QUEUE
+    gc.set_mode(cid, gc.MODE_RANDOM)
+    assert gc.get_mode(cid) == gc.MODE_RANDOM
+    gc.set_mode(cid, gc.MODE_REPEAT)
+    assert gc.get_mode(cid) == gc.MODE_REPEAT
+    # مقدار نامعتبر نادیده گرفته می‌شود
+    gc.set_mode(cid, "bogus")
+    assert gc.get_mode(cid) == gc.MODE_REPEAT
+
+
+def test_archive_random(fresh_db):
+    db = fresh_db
+    assert db.archive_random() is None
+    db.archive_put("q:song one", "fid1", 11, "One", 100, False)
+    db.archive_put("q:song two", "fid2", 12, "Two", 120, False)
+    db.archive_put("vidX", "fidV", 13, "Vid", 200, True)  # ویدیو
+    r = db.archive_random(audio_only=True)
+    assert r is not None and r["is_video"] is False  # فقط صوتی
 
 
 # ---------------- migration از settings قدیمی ----------------

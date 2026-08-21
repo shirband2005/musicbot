@@ -206,10 +206,17 @@ def panel_keyboard(
             B("پلی‌لیست", "playlist", BLUE, EMO_PLAYLIST),
             B("آهنگ بعدی", "skip", GREEN, EMO_NEXT),
         ],
-        [B("دریافت رسانه", "getmedia", BLUE, EMO_GETMEDIA)],
     ]
-    # دکمه پلتفرم فقط وقتی نمایش داده می‌شود که پلتفرم قفل نشده باشد.
+    # سه دکمه حالت پخش (فقط یکی روشن = سبز، بقیه قرمز)؛ بالای «دریافت رسانه».
     from bot import group_config as gc
+    mode = gc.get_mode(chat_id)
+    rows.append([
+        B("پخش تکرار", "mode_repeat", GREEN if mode == gc.MODE_REPEAT else RED),
+        B("پخش صف", "mode_queue", GREEN if mode == gc.MODE_QUEUE else RED),
+        B("پخش رندوم", "mode_random", GREEN if mode == gc.MODE_RANDOM else RED),
+    ])
+    rows.append([B("دریافت رسانه", "getmedia", BLUE, EMO_GETMEDIA)])
+    # دکمه پلتفرم فقط وقتی نمایش داده می‌شود که پلتفرم قفل نشده باشد.
     if not gc.is_locked(chat_id):
         rows.append([B(platform_pref.label(chat_id), "platform", BLUE, plat_icon)])
     rows.append([B("بستن پنل", "close", RED, EMO_CLOSE)])

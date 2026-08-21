@@ -22,14 +22,23 @@ LOGGER = logging.getLogger("musicbot.main")
 
 @call.on_update()
 async def _on_stream_end(_, update):
-    """وقتی استریم یک آهنگ تمام شد، به‌طور خودکار آهنگ بعدی صف را پخش کن."""
+    """وقتی استریم یک آهنگ تمام شد، طبق حالت پخش گروه ادامه بده."""
     if isinstance(update, StreamEnded):
         chat_id = update.chat_id
-        logs.info("پایان استریم | chat=%s — پخش بعدی", chat_id)
         try:
-            await player.skip(chat_id)
+            from bot import group_config as gc
+            mode = gc.get_mode(chat_id)
+            if mode == gc.MODE_REPEAT:
+                logs.info("پایان استریم | chat=%s — تکرار همان آهنگ", chat_id)
+                await player.repeat_current(chat_id)
+            elif mode == gc.MODE_RANDOM:
+                logs.info("پایان استریم | chat=%s — آهنگ رندوم از آرشیو", chat_id)
+                await player.play_random(chat_id)
+            else:
+                logs.info("پایان استریم | chat=%s — پخش بعدی صف", chat_id)
+                await player.skip(chat_id)
         except Exception as e:  # noqa: BLE001
-            logs.warn("auto-skip error | chat=%s: %s", chat_id, e)
+            logs.warn("auto-next error | chat=%s: %s", chat_id, e)
 
 
 async def main():

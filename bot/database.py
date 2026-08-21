@@ -75,7 +75,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             chat_id  INTEGER PRIMARY KEY,
             enabled  INTEGER DEFAULT 0,
             lock     TEXT DEFAULT 'none',   -- none|youtube|soundcloud
-            platform TEXT DEFAULT 'both'    -- both|youtube|soundcloud (چرخش کاربر)
+            platform TEXT DEFAULT 'both',   -- both|youtube|soundcloud (چرخش کاربر)
+            mode     TEXT DEFAULT 'queue'    -- queue|repeat|random (حالت پخش)
         );
         -- آرشیو آهنگ در کانال: کلید = video_id یا کوئری نرمال‌شده
         CREATE TABLE IF NOT EXISTS channel_songs (
@@ -90,6 +91,14 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
+    # افزودن ستون mode به دیتابیس‌های قدیمی (اگر نبود)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(group_settings)").fetchall()]
+        if "mode" not in cols:
+            conn.execute("ALTER TABLE group_settings ADD COLUMN mode TEXT DEFAULT 'queue'")
+            conn.commit()
+    except Exception:  # noqa: BLE001
+        pass
     _migrate_from_settings(conn)
 
 
@@ -226,6 +235,28 @@ def archive_count() -> int:
     with _lock:
         conn = _connect()
         return conn.execute("SELECT COUNT(*) AS c FROM channel_songs").fetchone()["c"]
+
+
+def archive_random(audio_only: bool = True) -> Optional[dict]:
+    """یک آهنگ تصادفی از آرشیو کانال برمی‌گرداند (برای حالت پخش رندوم)."""
+    with _lock:
+        conn = _connect()
+        sql = ("SELECT key, file_id, message_id, title, duration, is_video "
+               "FROM channel_songs")
+        if audio_only:
+            sql += " WHERE is_video=0"
+        sql += " ORDER BY RANDOM() LIMIT 1"
+        row = conn.execute(sql).fetchone()
+        if not row:
+            return None
+        return {
+            "key": row["key"],
+            "file_id": row["file_id"],
+            "message_id": row["message_id"],
+            "title": row["title"],
+            "duration": row["duration"],
+            "is_video": bool(row["is_video"]),
+        }
 
 
 # --- کش رسانه (فایل‌های دانلودشده) ---
@@ -374,17 +405,18 @@ def group_get(chat_id: int) -> dict:
     with _lock:
         conn = _connect()
         row = conn.execute(
-            "SELECT enabled, lock, platform FROM group_settings WHERE chat_id=?",
+            "SELECT enabled, lock, platform, mode FROM group_settings WHERE chat_id=?",
             (chat_id,),
         ).fetchone()
         if not row:
-            return {"enabled": 0, "lock": "none", "platform": "both"}
-        return {"enabled": row["enabled"], "lock": row["lock"], "platform": row["platform"]}
+            return {"enabled": 0, "lock": "none", "platform": "both", "mode": "queue"}
+        return {"enabled": row["enabled"], "lock": row["lock"],
+                "platform": row["platform"], "mode": row["mode"] or "queue"}
 
 
 def group_set(chat_id: int, **fields) -> None:
-    """به‌روزرسانی یک یا چند فیلد تنظیماتِ گروه (enabled/lock/platform)."""
-    allowed = {"enabled", "lock", "platform"}
+    """به‌روزرسانی یک یا چند فیلد تنظیماتِ گروه (enabled/lock/platform/mode)."""
+    allowed = {"enabled", "lock", "platform", "mode"}
     fields = {k: v for k, v in fields.items() if k in allowed}
     if not fields:
         return

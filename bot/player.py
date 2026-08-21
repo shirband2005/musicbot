@@ -417,6 +417,57 @@ async def previous(chat_id: int) -> Optional[Track]:
     return prev
 
 
+async def repeat_current(chat_id: int) -> None:
+    """حالت تکرار: همان آهنگ فعلی را دوباره از ابتدا پخش کن."""
+    cur = q.now_playing(chat_id)
+    if cur is None:
+        await stop(chat_id)
+        return
+    _stop_tg_stream(chat_id)
+    cur.mark_started()
+    ok = await _ensure_local_file(cur)
+    if not ok or not _source_ready(cur):
+        # اگر منبع دیگر در دسترس نیست (لینک منقضی/فایل پاک) به صف برو
+        await skip(chat_id)
+        return
+    await _play_stream(chat_id, cur)
+    await _send_panel(chat_id, new=True)
+
+
+async def play_random(chat_id: int) -> None:
+    """حالت رندوم: یک آهنگ تصادفی از آرشیو کانال پخش کن."""
+    from bot import channel
+    rec = db.archive_random(audio_only=True)
+    if not rec:
+        logs.warn("RANDOM | آرشیو خالی است chat=%s", chat_id)
+        await stop(chat_id)
+        return
+    path = await channel.archive_download(rec, DOWNLOAD_DIR)
+    if not path or not os.path.isfile(path):
+        logs.warn("RANDOM | دانلود از آرشیو ناموفق")
+        await stop(chat_id)
+        return
+    track = Track(
+        title=rec.get("title", "آهنگ تصادفی"), stream_url=path, webpage_url="",
+        duration=int(rec.get("duration") or 0),
+        duration_text=_fmt_dur_int(int(rec.get("duration") or 0)),
+        thumbnail=None, requester="پخش رندوم", is_video=False,
+        query="", video_id="", source="archive",
+    )
+    track.local_path = path
+    q.set_now_playing(chat_id, track)
+    await call.play(chat_id, _stream(track))
+    await _send_panel(chat_id, new=True)
+
+
+def _fmt_dur_int(seconds: int) -> str:
+    if not seconds:
+        return "نامشخص"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
 def _stop_tg_stream(chat_id: int) -> None:
     """اگر استریم مستقیم تلگرامی فعالی هست، feeder و FIFO را پاک کن."""
     try:

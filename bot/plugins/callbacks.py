@@ -89,6 +89,18 @@ async def panel_cb(client: Client, cq: CallbackQuery):
         await cq.answer("چیزی در حال پخش نیست.", show_alert=True)
         return
 
+    # --- حالت پخش (تکرار/صف/رندوم) — انحصاری متقابل ---
+    if action in ("mode_repeat", "mode_queue", "mode_random"):
+        from bot import group_config as gc
+        m = {"mode_repeat": gc.MODE_REPEAT, "mode_queue": gc.MODE_QUEUE,
+             "mode_random": gc.MODE_RANDOM}[action]
+        gc.set_mode(chat_id, m)
+        await player.refresh_panel(chat_id)
+        label = {"repeat": "🔂 پخش تکرار", "queue": "📋 پخش صف",
+                 "random": "🔀 پخش رندوم"}[m]
+        await cq.answer(f"{label} روشن شد")
+        return
+
     # --- پخش/توقف موقت (یک دکمه) ---
     if action == "playpause":
         if track.paused:
