@@ -128,6 +128,15 @@ async def store_forwarded(message) -> bool:
     db.archive_put(key, audio.file_id, message.id, title,
                    int(audio.duration or 0), False)
     LOGGER.info("ARCHIVE FORWARD | %s (key=%s)", title, key)
+    # اعلام در کانال لاگ
+    try:
+        await log(
+            "🎵 **آهنگ جدید به دیتابیس اضافه شد**\n"
+            f"• عنوان: {title}\n"
+            f"• مجموع آرشیو: {db.archive_count()} آهنگ"
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return True
 
 
