@@ -45,9 +45,55 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             is_video   INTEGER DEFAULT 0,
             last_used  REAL DEFAULT 0
         );
+        -- صف پخش پایدار (برای بازیابی پس از ری‌استارت)
+        CREATE TABLE IF NOT EXISTS play_queue (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id   INTEGER NOT NULL,
+            pos       INTEGER NOT NULL,   -- 0 = در حال پخش، >=1 ترتیب صف
+            data      TEXT NOT NULL       -- JSON از فیلدهای Track
+        );
         """
     )
     conn.commit()
+
+
+# --- صف پخش پایدار ---
+def queue_save(chat_id: int, tracks: list) -> None:
+    """کل وضعیت صف یک گروه را ذخیره می‌کند. tracks[0] = در حال پخش."""
+    import json
+    with _lock:
+        conn = _connect()
+        conn.execute("DELETE FROM play_queue WHERE chat_id=?", (chat_id,))
+        for pos, t in enumerate(tracks):
+            conn.execute(
+                "INSERT INTO play_queue(chat_id, pos, data) VALUES (?,?,?)",
+                (chat_id, pos, json.dumps(t, ensure_ascii=False)),
+            )
+        conn.commit()
+
+
+def queue_load_all() -> dict:
+    """همه صف‌های ذخیره‌شده را برمی‌گرداند: {chat_id: [track_dict, ...]}."""
+    import json
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT chat_id, pos, data FROM play_queue ORDER BY chat_id, pos"
+        ).fetchall()
+    out: dict = {}
+    for r in rows:
+        try:
+            out.setdefault(r["chat_id"], []).append(json.loads(r["data"]))
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def queue_clear(chat_id: int) -> None:
+    with _lock:
+        conn = _connect()
+        conn.execute("DELETE FROM play_queue WHERE chat_id=?", (chat_id,))
+        conn.commit()
 
 
 # --- کش رسانه (فایل‌های دانلودشده) ---

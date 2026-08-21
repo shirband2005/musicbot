@@ -15,9 +15,11 @@ from pyrogram.types import (
 
 from bot import database as db
 
+import config
+
 LOGGER = logging.getLogger("musicbot.auth")
 
-OWNER_ID = 8406519786  # سازنده/مالک ربات (= پشتیبانی)
+OWNER_ID = config.OWNER_ID  # سازنده/مالک ربات (= پشتیبانی) — از env
 
 # لینک پشتیبانی به‌صورت پویا از روی آیدی عددی مالک ساخته می‌شود:
 # اگر مالک یوزرنیم عمومی داشته باشد → https://t.me/<username> (در دکمه قطعی کار می‌کند)
@@ -65,7 +67,7 @@ _DENY_PV = "⛔️ این ربات فقط برای مالک و ادمین‌ها
 # کش کوتاه‌مدت ادمین‌ها برای هر چت: {chat_id: (timestamp, set(user_ids))}
 import time
 _admin_cache: dict = {}
-_CACHE_TTL = 120  # ثانیه
+_CACHE_TTL = 30  # ثانیه — کوتاه تا دی‌مت‌شدن ادمین سریع اعمال شود
 
 
 async def _admin_ids(client: Client, chat_id: int) -> set:

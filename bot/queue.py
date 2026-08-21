@@ -1,8 +1,13 @@
-"""مدیریت صف پخش (در RAM)، تاریخچه (برای آهنگ قبلی) و منطق پخش."""
+"""مدیریت صف پخش (با پشتیبان دیتابیس)، تاریخچه (برای آهنگ قبلی) و منطق پخش.
+
+صف و آهنگ در حال پخش هر گروه در دیتابیس هم ذخیره می‌شود تا با ری‌استارت از بین نرود.
+"""
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Deque, Dict, List, Optional
+
+from bot import database as db
 
 
 @dataclass
@@ -18,7 +23,7 @@ class Track:
     query: str = ""  # عبارت جست‌وجوی اصلی (برای دریافت رسانه/بازپخش)
     video_id: str = ""  # شناسه ویدیوی یوتیوب (کلید کش)
     local_path: str = ""  # مسیر فایل دانلودشده‌ی محلی (برای پخش پایدار در کال)
-    source: str = "youtube"  # منبع: youtube | soundcloud
+    source: str = "youtube"  # منبع: youtube | soundcloud | telegram
     # زمان‌بندی برای نوار پیشرفت
     started_at: float = 0.0
     elapsed_before_pause: float = 0.0
@@ -49,12 +54,57 @@ class Track:
         return int(pos)
 
 
+_TRACK_FIELDS = {f.name for f in fields(Track)}
+
+
+def track_from_dict(d: dict) -> Track:
+    return Track(**{k: v for k, v in d.items() if k in _TRACK_FIELDS})
+
+
 # صف هر گروه: chat_id -> deque[Track]
 _queues: Dict[int, Deque[Track]] = {}
 # آهنگ در حال پخش هر گروه
 _now_playing: Dict[int, Track] = {}
 # تاریخچه پخش هر گروه (برای «آهنگ قبلی»)
 _history: Dict[int, List[Track]] = {}
+
+
+def _persist(chat_id: int) -> None:
+    """وضعیت فعلی گروه (در حال پخش + صف) را در دیتابیس ذخیره می‌کند."""
+    tracks = []
+    cur = _now_playing.get(chat_id)
+    if cur is not None:
+        tracks.append(asdict(cur))
+    for t in _queues.get(chat_id, deque()):
+        tracks.append(asdict(t))
+    try:
+        if tracks:
+            db.queue_save(chat_id, tracks)
+        else:
+            db.queue_clear(chat_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def restore_all() -> Dict[int, Track]:
+    """در بوت: صف‌های ذخیره‌شده را به RAM برمی‌گرداند.
+
+    برمی‌گرداند {chat_id: now_playing_track} برای گروه‌هایی که باید ادامه پخش دهند.
+    """
+    resume: Dict[int, Track] = {}
+    try:
+        data = db.queue_load_all()
+    except Exception:  # noqa: BLE001
+        return resume
+    for chat_id, items in data.items():
+        if not items:
+            continue
+        tracks = [track_from_dict(d) for d in items]
+        cur = tracks[0]
+        _now_playing[chat_id] = cur
+        _queues[chat_id] = deque(tracks[1:])
+        resume[chat_id] = cur
+    return resume
 
 
 def get_queue(chat_id: int) -> Deque[Track]:
@@ -64,6 +114,7 @@ def get_queue(chat_id: int) -> Deque[Track]:
 def add(chat_id: int, track: Track) -> int:
     q = get_queue(chat_id)
     q.append(track)
+    _persist(chat_id)
     return len(q) - 1 + (1 if chat_id in _now_playing else 0)
 
 
@@ -74,6 +125,7 @@ def set_now_playing(chat_id: int, track: Track) -> None:
         _history.setdefault(chat_id, []).append(cur)
     _now_playing[chat_id] = track
     track.mark_started()
+    _persist(chat_id)
 
 
 def now_playing(chat_id: int) -> Optional[Track]:
@@ -90,6 +142,7 @@ def pop_next(chat_id: int) -> Optional[Track]:
     cur = _now_playing.pop(chat_id, None)
     if cur is not None:
         _history.setdefault(chat_id, []).append(cur)
+    _persist(chat_id)
     return None
 
 
@@ -105,6 +158,7 @@ def pop_previous(chat_id: int) -> Optional[Track]:
     # تنظیم مستقیم بدون افزودن دوباره به تاریخچه
     _now_playing[chat_id] = prev
     prev.mark_started()
+    _persist(chat_id)
     return prev
 
 
@@ -112,6 +166,10 @@ def clear(chat_id: int) -> None:
     _queues.pop(chat_id, None)
     _now_playing.pop(chat_id, None)
     _history.pop(chat_id, None)
+    try:
+        db.queue_clear(chat_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def progress_bar(position: int, duration: int, length: int = 12) -> str:

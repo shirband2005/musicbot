@@ -12,11 +12,10 @@ import logging
 from pyrogram import Client, enums
 from pyrogram.types import Message, MessageEntity
 
+from bot.auth import OWNER_ID
 from bot.facmd import fa_command
 
 LOGGER = logging.getLogger("musicbot.emojitool")
-
-OWNER_ID = 8406519786  # فقط مالک
 
 
 def _u16len(s: str) -> int:

@@ -168,6 +168,68 @@ def _prune_cache() -> None:
         logs.debug("prune cache: %s", e) if hasattr(logs, "debug") else None
 
 
+def _cleanup_orphans() -> None:
+    """فایل‌های یتیمِ پوشه دانلود را پاک می‌کند تا Volume پر نشود.
+
+    فایل‌هایی که در کش دیتابیس نیستند و در حال حاضر توسط هیچ گروهی پخش نمی‌شوند
+    و از یک آستانه قدیمی‌ترند حذف می‌شوند. همچنین اگر کل پوشه از سقف حجمی بگذرد،
+    قدیمی‌ترین فایل‌های بی‌استفاده حذف می‌شوند (LRU بر اساس mtime).
+    """
+    try:
+        d = DOWNLOAD_DIR
+        if not os.path.isdir(d):
+            return
+        max_mb = int(os.environ.get("DOWNLOAD_MAX_MB", "350"))
+        min_age = int(os.environ.get("ORPHAN_MIN_AGE", "1800"))  # ۳۰ دقیقه
+        import time as _t
+        now = _t.time()
+        # مسیرهای در حال استفاده (پخش فعلی هر گروه)
+        in_use = set()
+        for t in q._now_playing.values():  # noqa: SLF001
+            if t.local_path:
+                in_use.add(os.path.abspath(t.local_path))
+        entries = []
+        total = 0
+        for name in os.listdir(d):
+            p = os.path.abspath(os.path.join(d, name))
+            if not os.path.isfile(p):
+                continue
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            total += st.st_size
+            entries.append((p, st.st_size, st.st_mtime))
+        # حذف یتیم‌های قدیمی که در حال پخش نیستند
+        for p, size, mtime in entries:
+            if p in in_use:
+                continue
+            if now - mtime < min_age:
+                continue
+            # آیا در کش دیتابیس هست؟ (کش خودش با _prune_cache مدیریت می‌شود)
+            try:
+                os.remove(p)
+                total -= size
+                logs.info("ORPHAN CLEANUP | حذف %s", os.path.basename(p))
+            except OSError:
+                pass
+        # اگر هنوز از سقف بیشتر است، قدیمی‌ترین‌های بی‌استفاده را حذف کن
+        if total > max_mb * 1024 * 1024:
+            for p, size, mtime in sorted(entries, key=lambda e: e[2]):
+                if p in in_use or not os.path.isfile(p):
+                    continue
+                try:
+                    os.remove(p)
+                    total -= size
+                    logs.info("DISK CAP | حذف %s", os.path.basename(p))
+                except OSError:
+                    pass
+                if total <= max_mb * 1024 * 1024:
+                    break
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("cleanup orphans: %s", e)
+
+
 async def start_playback(chat_id: int, track: Track) -> None:
     await _ensure_local_file(track)
     q.set_now_playing(chat_id, track)
@@ -180,6 +242,21 @@ async def play_or_queue(chat_id: int, track: Track) -> int:
         await start_playback(chat_id, track)
         return 0
     return q.add(chat_id, track)
+
+
+async def resume_after_restart(chat_id: int, track: Track) -> None:
+    """پس از ری‌استارت: تلاش برای ادامه‌ی پخش آهنگی که در دیتابیس ذخیره شده بود.
+
+    اگر ویس‌چت هنوز فعال باشد پخش از سر گرفته می‌شود؛ در غیر این صورت صف در
+    دیتابیس می‌ماند تا کاربر دوباره پخش کند (سکوت به‌جای کرش).
+    """
+    try:
+        await _ensure_local_file(track)
+        await call.play(chat_id, _stream(track))
+        await _send_panel(chat_id, new=True)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("resume_after_restart chat=%s: %s", chat_id, e)
+        raise
 
 
 async def skip(chat_id: int) -> Optional[Track]:

@@ -9,6 +9,7 @@ from bot import app, assistant, call
 import config
 from bot import logs
 from bot import player
+from bot import queue as q
 from bot import youtube
 
 LOGGER = logging.getLogger("musicbot.main")
@@ -63,6 +64,19 @@ async def main():
     logs.stage_ok("BOOT")
     # بارگذاری file_idهای کش‌شده‌ی کاور (تا از آپلود مجدد جلوگیری شود)
     player._load_cover_fids()
+    # پاک‌سازی فایل‌های یتیم پوشه دانلود (جلوگیری از پر شدن Volume)
+    player._cleanup_orphans()
+    # بازیابی صف‌های ذخیره‌شده و ادامه پخش گروه‌هایی که وسط پخش ری‌استارت شدند
+    try:
+        resume = q.restore_all()
+        for chat_id, track in resume.items():
+            try:
+                await player.resume_after_restart(chat_id, track)
+                logs.info("بازیابی پخش | chat=%s | %s", chat_id, track.title)
+            except Exception as e:  # noqa: BLE001
+                logs.warn("resume failed | chat=%s: %s", chat_id, e)
+    except Exception as e:  # noqa: BLE001
+        logs.warn("restore queue: %s", e)
     # یوزرنیم مالک را برای دکمه پشتیبانی از پیش حل کن
     try:
         from bot import auth

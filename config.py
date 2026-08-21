@@ -19,7 +19,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 STRING_SESSION = os.environ.get("STRING_SESSION", "").strip()
 
 # --- مالک و مدیریت ---
-OWNER_ID = _int("OWNER_ID")
+# آیدی عددی مالک؛ از env خوانده می‌شود. اگر تنظیم نشده باشد، مقدار پیش‌فرض شناخته‌شده.
+OWNER_ID = _int("OWNER_ID", 8406519786)
 
 # --- مسیر دیتابیس ---
 # روی ریلوی یک Volume به /data وصل می‌شود تا فایل دیتابیس پایدار بماند.

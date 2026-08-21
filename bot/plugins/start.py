@@ -18,8 +18,9 @@ _GREEN = enums.ButtonStyle.SUCCESS
 _EMO_BACK = 5235864325540815679   # برگشت
 _EMO_CLOSE = 5215697242177939628  # بستن پنل
 
-# دکمه پشتیبانی به پروفایل مالک (با آیدی عددی) وصل می‌شود
-SUPPORT_USERNAME = "tg://user?id=8406519786"
+# دکمه پشتیبانی: لینک پویا از روی یوزرنیم مالک (auth.resolve_support_url) ساخته می‌شود.
+# اینجا فقط یک نشانه‌گذار می‌گذاریم؛ در help_markup با لینک واقعی جایگزین می‌شود.
+SUPPORT_PLACEHOLDER = "url|__support__"
 
 START_TEXT = (
     "🎵 **سلام! به موزیک‌پلیر فارسی خوش اومدی.**\n\n"
@@ -56,7 +57,7 @@ HELP_NODES = {
         "buttons": [
             [("🎵 پخش آهنگ", "h|play_song"), ("🎬 پخش فیلم", "h|play_video")],
             [("🎛 کنترل رسانه", "h|control")],
-            [("💬 پشتیبانی", "url|" + SUPPORT_USERNAME)],
+            [("💬 پشتیبانی", SUPPORT_PLACEHOLDER)],
         ],
     },
     "play_song": {
@@ -111,12 +112,17 @@ HELP_NODES = {
 }
 
 
-def help_markup(node: str) -> InlineKeyboardMarkup:
+def help_markup(node: str, support_url: str | None = None) -> InlineKeyboardMarkup:
     rows = []
     for row in HELP_NODES[node]["buttons"]:
         btn_row = []
         for label, data in row:
-            if data.startswith("url|"):
+            if data == SUPPORT_PLACEHOLDER:
+                # لینک پشتیبانی پویا (از auth.resolve_support_url)
+                from bot import auth
+                link = support_url or auth._support_cache["url"]
+                btn_row.append(InlineKeyboardButton(label, url=link, style=_BLUE))
+            elif data.startswith("url|"):
                 btn_row.append(InlineKeyboardButton(label, url=data[4:], style=_BLUE))
             elif data == "h|close":
                 # دکمه‌های بستن پنل/راهنما → قرمز + آیکون

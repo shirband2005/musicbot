@@ -10,6 +10,7 @@
   صف / صف پخش / لیست / لیست پخش → نمایش صف
 """
 import logging
+import os
 
 from pyrogram import Client
 from pyrogram.types import Message
@@ -171,7 +172,6 @@ async def _play_telegram_file(client: Client, message: Message) -> bool:
     db.add_chat(message.chat.id)
     status = await message.reply_text("⬇️ در حال آماده‌سازی فایل...")
     try:
-        import os
         os.makedirs(player.DOWNLOAD_DIR, exist_ok=True)
         path = await client.download_media(reply, file_name=os.path.join(player.DOWNLOAD_DIR, ""))
     except Exception as e:  # noqa: BLE001
