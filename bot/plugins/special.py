@@ -63,6 +63,6 @@ async def list_special_cmd(client: Client, message: Message):
         return
     lines = ["⭐️ **کاربران ویژه:**\n"]
     for uid in ids:
-        name = db.get_setting(f"special_{uid}") or ""
+        name = db.special_name(uid)
         lines.append(f"• {name} (`{uid}`)")
     await message.reply_text("\n".join(lines))

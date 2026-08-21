@@ -267,8 +267,8 @@ async def vplay_cmd(client: Client, message: Message):
     await _handle_play(client, message, is_video=True)
 
 
-# --- مکث: «مکث» / «توقف» ---
-@Client.on_message(fa_command(["مکث", "توقف"]))
+# --- مکث: «مکث» / «توقف موقت» (فقط نگه‌داشتن موقت، در کال می‌ماند) ---
+@Client.on_message(fa_command(["مکث", "توقف موقت"]))
 async def pause_cmd(client: Client, message: Message):
     if not await _gate(client, message):
         return
@@ -280,7 +280,7 @@ async def pause_cmd(client: Client, message: Message):
     await call.pause(message.chat.id)
     track.mark_paused()
     await player.refresh_panel(message.chat.id)
-    await message.reply_text("⏸ متوقف شد.")
+    await message.reply_text("⏸ موقتاً متوقف شد. برای ادامه بنویس «ادامه».")
 
 
 # --- ادامه: «ادامه» / «شروع» ---
@@ -314,8 +314,8 @@ async def skip_cmd(client: Client, message: Message):
         await message.reply_text("⏹ صف خالی شد. از کال خارج شدم.")
 
 
-# --- توقف کامل: «خروج» / «اتمام» ---
-@Client.on_message(fa_command(["خروج", "اتمام"]))
+# --- توقف کامل: «توقف» / «خروج» / «اتمام» / «قطع» (از کال خارج می‌شود) ---
+@Client.on_message(fa_command(["توقف", "خروج", "اتمام", "قطع"]))
 async def stop_cmd(client: Client, message: Message):
     if not await _gate(client, message):
         return

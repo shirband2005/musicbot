@@ -52,9 +52,75 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             pos       INTEGER NOT NULL,   -- 0 = در حال پخش، >=1 ترتیب صف
             data      TEXT NOT NULL       -- JSON از فیلدهای Track
         );
+        -- کاربران ویژه (دسترسی سراسری، فقط توسط مالک)
+        CREATE TABLE IF NOT EXISTS special_users (
+            user_id  INTEGER PRIMARY KEY,
+            name     TEXT DEFAULT '',
+            added_at REAL DEFAULT 0
+        );
+        -- تنظیمات هر گروه (روشن/خاموش + قفل پلتفرم + ترجیح پلتفرم)
+        CREATE TABLE IF NOT EXISTS group_settings (
+            chat_id  INTEGER PRIMARY KEY,
+            enabled  INTEGER DEFAULT 0,
+            lock     TEXT DEFAULT 'none',   -- none|youtube|soundcloud
+            platform TEXT DEFAULT 'both'    -- both|youtube|soundcloud (چرخش کاربر)
+        );
         """
     )
     conn.commit()
+    _migrate_from_settings(conn)
+
+
+def _migrate_from_settings(conn) -> None:
+    """مهاجرت یک‌باره‌ی داده‌های قدیمی از جدول settings به جدول‌های اختصاصی."""
+    try:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    except Exception:  # noqa: BLE001
+        return
+    migrated = 0
+    for r in rows:
+        key = r["key"]
+        val = r["value"]
+        try:
+            if key.startswith("special_"):
+                uid = int(key.split("_", 1)[1])
+                conn.execute(
+                    "INSERT OR IGNORE INTO special_users(user_id, name, added_at) VALUES (?,?,0)",
+                    (uid, val if val != "1" else ""),
+                )
+                conn.execute("DELETE FROM settings WHERE key=?", (key,))
+                migrated += 1
+            elif key.startswith("player_on_"):
+                cid = int(key.split("player_on_", 1)[1])
+                conn.execute(
+                    "INSERT INTO group_settings(chat_id, enabled) VALUES (?,?) "
+                    "ON CONFLICT(chat_id) DO UPDATE SET enabled=excluded.enabled",
+                    (cid, 1 if val == "1" else 0),
+                )
+                conn.execute("DELETE FROM settings WHERE key=?", (key,))
+                migrated += 1
+            elif key.startswith("player_lock_"):
+                cid = int(key.split("player_lock_", 1)[1])
+                conn.execute(
+                    "INSERT INTO group_settings(chat_id, lock) VALUES (?,?) "
+                    "ON CONFLICT(chat_id) DO UPDATE SET lock=excluded.lock",
+                    (cid, val),
+                )
+                conn.execute("DELETE FROM settings WHERE key=?", (key,))
+                migrated += 1
+            elif key.startswith("platform_"):
+                cid = int(key.split("platform_", 1)[1])
+                conn.execute(
+                    "INSERT INTO group_settings(chat_id, platform) VALUES (?,?) "
+                    "ON CONFLICT(chat_id) DO UPDATE SET platform=excluded.platform",
+                    (cid, val),
+                )
+                conn.execute("DELETE FROM settings WHERE key=?", (key,))
+                migrated += 1
+        except (ValueError, IndexError):
+            pass
+    if migrated:
+        conn.commit()
 
 
 # --- صف پخش پایدار ---
@@ -192,33 +258,82 @@ def get_users() -> List[int]:
 
 # --- کاربران ویژه (دسترسی سراسری به ربات، فقط توسط مالک تنظیم می‌شود) ---
 def add_special(user_id: int, name: str = "") -> None:
-    set_setting(f"special_{user_id}", name or "1")
+    import time
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO special_users(user_id, name, added_at) VALUES (?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET name=excluded.name",
+            (user_id, name, time.time()),
+        )
+        conn.commit()
 
 
 def remove_special(user_id: int) -> None:
     with _lock:
         conn = _connect()
-        conn.execute("DELETE FROM settings WHERE key=?", (f"special_{user_id}",))
+        conn.execute("DELETE FROM special_users WHERE user_id=?", (user_id,))
         conn.commit()
 
 
 def is_special(user_id: int) -> bool:
-    return get_setting(f"special_{user_id}") is not None
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT 1 FROM special_users WHERE user_id=?", (user_id,)
+        ).fetchone()
+        return row is not None
+
+
+def special_name(user_id: int) -> str:
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT name FROM special_users WHERE user_id=?", (user_id,)
+        ).fetchone()
+        return row["name"] if row else ""
 
 
 def list_special() -> List[int]:
     with _lock:
         conn = _connect()
         rows = conn.execute(
-            "SELECT key FROM settings WHERE key LIKE 'special_%'"
+            "SELECT user_id FROM special_users ORDER BY added_at"
         ).fetchall()
-        out = []
-        for r in rows:
-            try:
-                out.append(int(r["key"].split("_", 1)[1]))
-            except (ValueError, IndexError):
-                pass
-        return out
+        return [r["user_id"] for r in rows]
+
+
+# --- تنظیمات هر گروه (روشن/خاموش + قفل پلتفرم + ترجیح پلتفرم) ---
+def group_get(chat_id: int) -> dict:
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT enabled, lock, platform FROM group_settings WHERE chat_id=?",
+            (chat_id,),
+        ).fetchone()
+        if not row:
+            return {"enabled": 0, "lock": "none", "platform": "both"}
+        return {"enabled": row["enabled"], "lock": row["lock"], "platform": row["platform"]}
+
+
+def group_set(chat_id: int, **fields) -> None:
+    """به‌روزرسانی یک یا چند فیلد تنظیماتِ گروه (enabled/lock/platform)."""
+    allowed = {"enabled", "lock", "platform"}
+    fields = {k: v for k, v in fields.items() if k in allowed}
+    if not fields:
+        return
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO group_settings(chat_id) VALUES (?) ON CONFLICT(chat_id) DO NOTHING",
+            (chat_id,),
+        )
+        sets = ", ".join(f"{k}=?" for k in fields)
+        conn.execute(
+            f"UPDATE group_settings SET {sets} WHERE chat_id=?",
+            (*fields.values(), chat_id),
+        )
+        conn.commit()
 
 
 # --- تنظیمات کلید/مقدار ---

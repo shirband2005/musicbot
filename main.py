@@ -29,6 +29,10 @@ async def _on_stream_end(_, update):
 
 async def main():
     logs.stage_start("BOOT")
+    # سرور سلامت را زود بالا بیاور (تا Railway پورت را ببیند)
+    import os
+    from bot import health
+    health.start_health_server(int(os.environ.get("PORT", "8080")))
     # نوشتن فایل کوکی از COOKIES_B64 (اگر تنظیم شده باشد) پیش از هر چیز
     if config.materialize_cookies():
         logs.info("YouTube: فایل کوکی آماده شد ✅ (%s)", config.COOKIES_FILE)
@@ -90,6 +94,12 @@ async def main():
         logs.info("لینک پشتیبانی: %s", url)
     except Exception as e:  # noqa: BLE001
         logs.warn("resolve support url: %s", e)
+    # علامت‌گذاری سلامت: ربات آماده است
+    try:
+        from bot import health
+        health.mark_ready(me.username or "")
+    except Exception:  # noqa: BLE001
+        pass
     logs.info("🎵 ربات آماده است.")
 
     await idle()

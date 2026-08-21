@@ -1,5 +1,7 @@
 """راه‌اندازی کلاینت‌ها: ربات (app)، یوزربات کمکی (assistant) و موتور پخش کال."""
 import logging
+import logging.handlers
+import os
 import sys
 
 from pyrogram import Client
@@ -7,10 +9,26 @@ from pytgcalls import PyTgCalls
 
 import config
 
+_handlers = [logging.StreamHandler(sys.stdout)]
+# لاگ‌روتیشن روی فایل (اگر مسیر لاگ قابل نوشتن باشد) — جلوگیری از رشد بی‌نهایت
+_log_file = os.environ.get("LOG_FILE", "").strip()
+if _log_file:
+    try:
+        d = os.path.dirname(_log_file)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        _handlers.append(
+            logging.handlers.RotatingFileHandler(
+                _log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
+            )
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s - %(name)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    handlers=_handlers,
 )
 # کاهش نویز لاگ‌های داخلی
 logging.getLogger("pyrogram").setLevel(logging.WARNING)

@@ -16,7 +16,7 @@ _LABEL = {
 
 
 def get(chat_id: int) -> str:
-    v = db.get_setting(f"platform_{chat_id}", BOTH)
+    v = db.group_get(chat_id)["platform"]
     return v if v in _ORDER else BOTH
 
 
@@ -39,7 +39,7 @@ def cycle(chat_id: int) -> str:
     """به حالت بعدی می‌رود و ذخیره می‌کند؛ حالت جدید را برمی‌گرداند."""
     cur = get(chat_id)
     nxt = _ORDER[(_ORDER.index(cur) + 1) % len(_ORDER)]
-    db.set_setting(f"platform_{chat_id}", nxt)
+    db.group_set(chat_id, platform=nxt)
     return nxt
 
 
