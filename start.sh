@@ -2,9 +2,15 @@
 # اجرای هم‌زمان سرویس PO Token (bgutil) و سپس ربات.
 set -e
 
+# --- تنظیم مصرف حافظه (کاهش رم روی سقف ۱ گیگ ریلوی) ---
+# glibc malloc: حافظه‌ی آزادشده را زودتر به سیستم‌عامل برگردان (به‌جای نگه‌داشتن).
+export MALLOC_TRIM_THRESHOLD_=100000
+export MALLOC_ARENA_MAX=2
+export PYTHONMALLOC=malloc
+
 echo "[start] راه‌اندازی سرویس PO Token روی پورت 4416..."
-# سرویس bgutil را در پس‌زمینه اجرا کن
-node /app/bgutil/server/build/main.js --port 4416 &
+# سرویس bgutil را در پس‌زمینه اجرا کن — با محدودیت حافظه‌ی Node (کاهش مصرف رم).
+node --max-old-space-size=64 /app/bgutil/server/build/main.js --port 4416 &
 BGUTIL_PID=$!
 
 # صبر کوتاه تا سرویس بالا بیاید

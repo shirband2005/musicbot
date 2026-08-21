@@ -37,7 +37,10 @@ _state: dict = {}
 _runner = None
 _started = False
 
-_QUEUE_MAX = 256  # حداکثر تیکه در صف هر مشترک (بافر ~۲۵۶ مگ برای جلوگیری از قطع)
+# حداکثر تیکه در صف هر مشترک. هر تیکه ~۱ مگ است، پس این سقفِ مصرف رم بافر است.
+# با دو مصرف‌کننده (صدا+تصویر) و چند گروه همزمان، عدد بزرگ خطر OOM دارد
+# (سقف رم سرور ۱ گیگ). ۴۸ برای پخش روان کافی است و رم را امن نگه می‌دارد.
+_QUEUE_MAX = int(os.environ.get("TG_STREAM_BUFFER", "48"))
 
 
 class _Broadcast:
@@ -225,10 +228,16 @@ async def _report_logs(chat_id: int, alog: str, vlog: str) -> None:
 
 
 def stop_previous(chat_id: int) -> None:
-    """reader و وضعیت استریم فعال این چت را پاک می‌کند."""
+    """reader و وضعیت استریم فعال این چت را پاک می‌کند + آزادسازی رم."""
     st = _state.pop(chat_id, None)
     if not st:
         return
     bc = st.get("broadcast")
     if bc and bc.reader_task and not bc.reader_task.done():
         bc.reader_task.cancel()
+    # آزادسازی حافظه‌ی بافرهای استریم به سیستم‌عامل (پس از فایل حجیم مهم است)
+    try:
+        import gc
+        gc.collect()
+    except Exception:  # noqa: BLE001
+        pass
