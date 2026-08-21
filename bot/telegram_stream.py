@@ -110,7 +110,25 @@ async def build_stream(chat_id: int, message) -> Stream:
     )
     audio = AudioStream(MediaSource.SHELL, acmd, AudioParameters(48000, 2))
     video = VideoStream(MediaSource.SHELL, vcmd, VideoParameters(640, 360, 20))
+    # لاگ ffmpeg را چند ثانیه بعد به stdout بفرست (برای دیباگ از راه دور)
+    asyncio.create_task(_report_logs(chat_id, alog, vlog))
     return Stream(microphone=audio, camera=video)
+
+
+async def _report_logs(chat_id: int, alog: str, vlog: str) -> None:
+    """چند ثانیه پس از شروع، خطاهای ffmpeg را در لاگ اصلی چاپ می‌کند."""
+    await asyncio.sleep(8)
+    for name, path in (("AUDIO", alog), ("VIDEO", vlog)):
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", errors="ignore") as fh:
+                    txt = fh.read().strip()
+                if txt:
+                    LOGGER.warning("ffmpeg %s (chat=%s):\n%s", name, chat_id, txt[:800])
+                else:
+                    LOGGER.info("ffmpeg %s (chat=%s): بدون خطا", name, chat_id)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def stop_previous(chat_id: int) -> None:
