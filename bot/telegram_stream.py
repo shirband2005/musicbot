@@ -183,25 +183,31 @@ async def build_stream(chat_id: int, message) -> Stream:
     except Exception:  # noqa: BLE001
         pass
 
-    # فلگ‌های reconnect برای HTTP لوکال (جلوگیری از قطع وسط پخش) + بافر ورودی.
+    # فلگ‌های reconnect برای HTTP لوکال + کم‌تأخیر (جلوگیری از انباشت تأخیر/drift).
+    # nobuffer/low_delay: بافر داخلی ffmpeg را کم می‌کند تا تأخیر انباشته نشود.
     common = (
+        "-fflags nobuffer+discardcorrupt -flags low_delay "
         "-reconnect 1 -reconnect_streamed 1 -reconnect_at_eof 0 "
-        "-reconnect_delay_max 5 -rw_timeout 30000000 -threads 0"
+        "-reconnect_delay_max 5 -rw_timeout 30000000 -threads 1"
     )
     vlog = f"/tmp/tgv_{chat_id}.log"
     alog = f"/tmp/tga_{chat_id}.log"
     vsh = f"/tmp/tgv_{chat_id}.sh"
     ash = f"/tmp/tga_{chat_id}.sh"
     # منبع SHELL کاراکترهای شل (2>, |) را نمی‌پذیرد → دستور را در wrapper می‌گذاریم.
+    # -vsync cfr: فریم‌ریت ثابت (جلوگیری از drift تصویر).
     with open(vsh, "w") as fh:
         fh.write(
             f"#!/bin/bash\nexec ffmpeg {common} -i '{url}' -an -v error "
-            f"-map 0:v:0? -f rawvideo -r {vfps} -pix_fmt yuv420p -vf {vparams} pipe:1 2>{vlog}\n"
+            f"-map 0:v:0? -f rawvideo -r {vfps} -vsync cfr "
+            f"-pix_fmt yuv420p -vf {vparams} pipe:1 2>{vlog}\n"
         )
+    # -af aresample=async: صدا را با کلاک هماهنگ نگه می‌دارد (جلوگیری از drift صدا).
     with open(ash, "w") as fh:
         fh.write(
             f"#!/bin/bash\nexec ffmpeg {common} -i '{url}' -vn -v error "
-            f"-map 0:a:0? -f s16le -ac 2 -ar 48000 pipe:1 2>{alog}\n"
+            f"-map 0:a:0? -af aresample=async=1:min_hard_comp=0.1:first_pts=0 "
+            f"-f s16le -ac 2 -ar 48000 pipe:1 2>{alog}\n"
         )
     os.chmod(vsh, 0o755)
     os.chmod(ash, 0o755)

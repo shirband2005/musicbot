@@ -289,6 +289,22 @@ def test_archive_random(fresh_db):
     assert r is not None and r["is_video"] is False  # فقط صوتی
 
 
+def test_history_capped(fresh_db):
+    """تاریخچه‌ی پخش نباید بی‌نهایت رشد کند (جلوگیری از نشت حافظه)."""
+    import importlib
+    import bot.queue as q
+    importlib.reload(q)
+    cid = -100888
+
+    def mk(i):
+        return q.Track(title=f"t{i}", stream_url="x", webpage_url="", duration=1,
+                       duration_text="0:01", thumbnail=None, requester="a")
+    # ۵۰ آهنگ پشت‌سرهم پخش کن
+    for i in range(50):
+        q.set_now_playing(cid, mk(i))
+    assert len(q._history.get(cid, [])) <= q._HISTORY_MAX
+
+
 # ---------------- migration از settings قدیمی ----------------
 def test_migration_from_settings(tmp_path, monkeypatch):
     import sqlite3

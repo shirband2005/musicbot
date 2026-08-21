@@ -70,6 +70,15 @@ _queues: Dict[int, Deque[Track]] = {}
 _now_playing: Dict[int, Track] = {}
 # تاریخچه پخش هر گروه (برای «آهنگ قبلی»)
 _history: Dict[int, List[Track]] = {}
+_HISTORY_MAX = 20  # حداکثر آهنگ در تاریخچه‌ی هر گروه (جلوگیری از نشت حافظه)
+
+
+def _hist_add(chat_id: int, track: Track) -> None:
+    """آهنگ را به تاریخچه اضافه می‌کند و تاریخچه را به _HISTORY_MAX محدود نگه می‌دارد."""
+    h = _history.setdefault(chat_id, [])
+    h.append(track)
+    if len(h) > _HISTORY_MAX:
+        del h[: len(h) - _HISTORY_MAX]
 
 
 def _persist(chat_id: int) -> None:
@@ -125,7 +134,7 @@ def set_now_playing(chat_id: int, track: Track) -> None:
     # آهنگ فعلی را به تاریخچه منتقل کن
     cur = _now_playing.get(chat_id)
     if cur is not None and cur is not track:
-        _history.setdefault(chat_id, []).append(cur)
+        _hist_add(chat_id, cur)
     _now_playing[chat_id] = track
     track.mark_started()
     _persist(chat_id)
@@ -144,7 +153,7 @@ def pop_next(chat_id: int) -> Optional[Track]:
     # صف خالی — آهنگ فعلی هم به تاریخچه برود
     cur = _now_playing.pop(chat_id, None)
     if cur is not None:
-        _history.setdefault(chat_id, []).append(cur)
+        _hist_add(chat_id, cur)
     _persist(chat_id)
     return None
 
@@ -180,7 +189,7 @@ def end_current(chat_id: int) -> None:
     نگه داشته می‌شود تا «آهنگ قبلی» بعد از پایان صف هم کار کند."""
     cur = _now_playing.pop(chat_id, None)
     if cur is not None:
-        _history.setdefault(chat_id, []).append(cur)
+        _hist_add(chat_id, cur)
     _queues.pop(chat_id, None)
     try:
         db.queue_clear(chat_id)
