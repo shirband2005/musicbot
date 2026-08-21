@@ -92,3 +92,50 @@ async def search(query: str) -> Optional[dict]:
     except asyncio.TimeoutError:
         logs.stage_fail("SC_SEARCH", err=f"مهلت {hard:.0f}s تمام شد")
         return None
+
+
+def _download_sync(query: str, out_dir: str) -> dict:
+    """دانلود کامل آهنگ ساوندکلاد به فایل mp3 (برای آرشیو). مسیر در path."""
+    import glob
+    os.makedirs(out_dir, exist_ok=True)
+    is_url = query.startswith(("http://", "https://")) and "soundcloud.com" in query
+    search = query if is_url else f"scsearch1:{query}"
+    opts = {
+        **_YDL,
+        "format": _AUDIO_FMT,
+        "outtmpl": os.path.join(out_dir, "sc_%(id)s.%(ext)s"),
+        "postprocessors": [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3",
+             "preferredquality": os.environ.get("MP3_QUALITY", "96")},
+        ],
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(search, download=True)
+        if "entries" in info:
+            entries = [e for e in info.get("entries", []) if e]
+            if not entries:
+                return {}
+            info = entries[0]
+    sid = str(info.get("id", ""))
+    matches = glob.glob(os.path.join(out_dir, f"sc_{sid}.*"))
+    path = matches[0] if matches else ""
+    return {
+        "path": path,
+        "id": "sc_" + sid,
+        "title": info.get("title", "نامشخص"),
+        "duration": info.get("duration") or 0,
+        "uploader": info.get("uploader", ""),
+    }
+
+
+async def download(query: str, out_dir: str = "downloads") -> dict:
+    """دانلود ساوندکلاد در executor (برای آرشیو پس‌زمینه)."""
+    loop = asyncio.get_event_loop()
+    hard = float(os.environ.get("SC_DL_TIMEOUT", "90"))
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _download_sync, query, out_dir), timeout=hard
+        )
+    except Exception as e:  # noqa: BLE001
+        logs.debug("sc download: %s", e)
+        return {}

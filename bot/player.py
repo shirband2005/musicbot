@@ -98,14 +98,23 @@ def _stream(track: Track) -> MediaStream:
 
 
 async def _ensure_local_file(track: Track) -> bool:
-    """آماده‌سازی منبع پخش.
-
-    - ساوندکلاد: مستقیم استریم می‌شود. اگر لینک منقضی شده باشد (پخش از تاریخچه)
-      دوباره جست‌وجو می‌شود تا لینک تازه بگیریم.
-    - یوتیوب: اگر فایل محلی/کش داریم فوری، وگرنه از طریق پروکسی دانلود می‌شود.
-    """
+    """آماده‌سازی منبع پخش (ساوندکلاد استریم/آرشیو، یوتیوب دانلود/کش/آرشیو)."""
     # ساوندکلاد مستقیم استریم می‌شود (IP دیتاسنتر بلاک نیست)
     if track.source == "soundcloud":
+        # ۰) اگر همین آهنگ قبلاً در آرشیو کانال هست → از تلگرام بگیر و از فایل پخش کن
+        #    (بدون استریم دوباره ساوندکلاد؛ پایدارتر و مستقل از لینک منقضی‌شونده)
+        try:
+            from bot import channel
+            rec = channel.archive_lookup(query=(track.query or track.title))
+            if rec:
+                path = await channel.archive_download(rec, DOWNLOAD_DIR)
+                if path and os.path.isfile(path):
+                    track.local_path = path
+                    logs.info("ARCHIVE HIT | %s (ساوندکلاد از کانال)", track.title)
+                    return True
+        except Exception as e:  # noqa: BLE001
+            logs.debug("sc archive lookup: %s", e)
+
         # لینک استریم ساوندکلاد امضاشده و منقضی‌شدنی است؛ برای پخش از تاریخچه
         # دوباره یک لینک تازه بگیر.
         if track.query:
@@ -115,6 +124,11 @@ async def _ensure_local_file(track: Track) -> bool:
                     track.stream_url = fresh["stream_url"]
             except Exception as e:  # noqa: BLE001
                 logs.debug("sc refresh: %s", e)
+
+        # آرشیو پس‌زمینه: همزمان با استریم، دانلود کن و به کانال بفرست (بدون بلاک پخش)
+        if track.query and not getattr(track, "_archived", False):
+            track._archived = True  # جلوگیری از آرشیو تکراری
+            asyncio.create_task(_archive_soundcloud(track))
         return bool(track.stream_url)
 
     # یوتیوب: اگر فایل قبلاً دانلود شده (تاریخچه) فوری پخش کن
@@ -191,6 +205,36 @@ def _prune_cache() -> None:
                 pass
     except Exception as e:  # noqa: BLE001
         logs.debug("prune cache: %s", e)
+
+
+async def _archive_soundcloud(track: Track) -> None:
+    """در پس‌زمینه: آهنگ ساوندکلاد را دانلود و به کانال آرشیو می‌فرستد.
+
+    روی پخش فعلی (که مستقیم استریم می‌شود) اثری ندارد.
+    """
+    try:
+        from bot import channel
+        import config
+        if not config.ARCHIVE_CHANNEL:
+            return
+        # اگر قبلاً آرشیو شده، کاری نکن
+        if channel.archive_lookup(query=(track.query or track.title)):
+            return
+        info = await soundcloud.download(track.query, out_dir=DOWNLOAD_DIR)
+        path = info.get("path", "")
+        if path and os.path.isfile(path):
+            await channel.archive_store(
+                path, "", track.query,
+                info.get("title", track.title),
+                int(info.get("duration") or 0), False,
+            )
+            # فایل موقتِ آرشیو را پاک کن (پخش از استریم است، این فایل لازم نیست)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    except Exception as e:  # noqa: BLE001
+        logs.debug("archive soundcloud: %s", e)
 
 
 def _cleanup_orphans() -> None:
