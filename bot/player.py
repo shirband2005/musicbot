@@ -81,17 +81,9 @@ def set_muted(chat_id: int, val: bool) -> None:
 
 
 def _stream(track: Track) -> MediaStream:
-    # استریم مستقیم فایل حجیم تلگرام: منبع یک FIFO است که یوزربات پرش می‌کند.
-    # کیفیت ۳۶۰p قفل می‌شود (فایل حجیم، پخش روان‌تر).
-    src = track.local_path or track.stream_url
-    if track.source == "telegram_stream":
-        return MediaStream(
-            src,
-            audio_parameters=AudioQuality.MEDIUM,
-            video_parameters=VideoQuality.SD_360p,
-        )
     # همیشه از فایل محلی پخش کن (لینک استریم یوتیوب به IP پروکسی قفل است
     # و ffmpeg از IP سرور نمی‌تواند آن را بگیرد → سکوت در کال).
+    src = track.local_path or track.stream_url
     if track.is_video:
         return MediaStream(
             src,
@@ -105,25 +97,31 @@ def _stream(track: Track) -> MediaStream:
     )
 
 
-async def _ensure_local_file(track: Track) -> bool:
-    """آماده‌سازی منبع پخش (ساوندکلاد استریم/آرشیو، یوتیوب دانلود/کش/آرشیو)."""
-    # استریم مستقیم فایل حجیم تلگرام: یوزربات فایل را تیکه‌تیکه در FIFO می‌ریزد.
+async def _play_stream(chat_id: int, track: Track):
+    """منبع مناسب را می‌سازد و call.play را صدا می‌زند.
+
+    برای فایل حجیم تلگرام از raw.Stream با SHELL استفاده می‌شود (probe را دور می‌زند)؛
+    برای بقیه از MediaStream معمولی.
+    """
     if track.source == "telegram_stream":
         from bot import assistant
         from bot import telegram_stream as tgs
-        try:
-            # پیام حاوی فایل را از دید یوزربات کمکی بگیر (باید در آن چت عضو باشد)
-            msg = await assistant.get_messages(track.tg_chat_id, track.tg_msg_id)
-            if not msg:
-                logs.warn("tgstream: پیام یافت نشد (chat=%s msg=%s)", track.tg_chat_id, track.tg_msg_id)
-                return False
-            fifo = await tgs.start_feeder(track.tg_chat_id, msg)
-            track.local_path = fifo
-            logs.info("TG STREAM | %s (استریم مستقیم از تلگرام، بدون دانلود)", track.title)
-            return True
-        except Exception as e:  # noqa: BLE001
-            logs.warn("tgstream setup failed: %s", e)
-            return False
+        msg = await assistant.get_messages(track.tg_chat_id, track.tg_msg_id)
+        if not msg:
+            raise RuntimeError("پیام فایل یافت نشد (یوزربات در گروه عضو است؟)")
+        stream = await tgs.build_stream(chat_id, msg)
+        logs.info("TG STREAM | %s (استریم مستقیم ۳۶۰p، بدون دانلود)", track.title)
+        await call.play(chat_id, stream)
+    else:
+        await call.play(chat_id, _stream(track))
+
+
+async def _ensure_local_file(track: Track) -> bool:
+    """آماده‌سازی منبع پخش (ساوندکلاد استریم/آرشیو، یوتیوب دانلود/کش/آرشیو)."""
+    # استریم مستقیم فایل حجیم تلگرام: توسط _build_play_stream مدیریت می‌شود
+    # (raw.Stream با SHELL که probe را دور می‌زند)؛ اینجا فقط آماده‌بودن را تأیید کن.
+    if track.source == "telegram_stream":
+        return bool(track.tg_chat_id and track.tg_msg_id)
 
     # ساوندکلاد مستقیم استریم می‌شود (IP دیتاسنتر بلاک نیست)
     if track.source == "soundcloud":
@@ -334,8 +332,8 @@ def _source_ready(track: Track) -> bool:
     از صف ذخیره‌شده که فایلش پاک شده).
     """
     if track.source == "telegram_stream":
-        # منبع یک FIFO است که feeder پرش می‌کند؛ وجود مسیر کافی است
-        return bool(track.local_path and os.path.exists(track.local_path))
+        # منبع HTTP لوکال است (raw SHELL)؛ فقط آیدی پیام لازم است
+        return bool(track.tg_chat_id and track.tg_msg_id)
     if track.local_path:
         return os.path.isfile(track.local_path)
     return bool(track.stream_url)
@@ -353,7 +351,7 @@ async def start_playback(chat_id: int, track: Track) -> None:
             await stop(chat_id)
         return
     q.set_now_playing(chat_id, track)
-    await call.play(chat_id, _stream(track))
+    await _play_stream(chat_id, track)
     await _send_panel(chat_id, new=True)
 
 
@@ -400,7 +398,7 @@ async def skip(chat_id: int) -> Optional[Track]:
     if not ok or not _source_ready(nxt):
         logs.warn("SKIP SKIP | منبع آماده نیست: %s → بعدی", nxt.title)
         return await skip(chat_id)
-    await call.play(chat_id, _stream(nxt))
+    await _play_stream(chat_id, nxt)
     await _send_panel(chat_id, new=True)
     return nxt
 
@@ -414,7 +412,7 @@ async def previous(chat_id: int) -> Optional[Track]:
     if not ok or not _source_ready(prev):
         logs.warn("PREV SKIP | منبع آماده نیست: %s", prev.title)
         return None
-    await call.play(chat_id, _stream(prev))
+    await _play_stream(chat_id, prev)
     await _send_panel(chat_id, new=True)
     return prev
 

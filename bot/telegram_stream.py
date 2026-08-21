@@ -1,103 +1,112 @@
 """استریم مستقیم فایل حجیم تلگرام به کال (بدون دانلود کامل روی دیسک).
 
-روش: یوزربات کمکی فایل را تیکه‌تیکه (۱ مگ، سقف پروتکل تلگرام) با stream_media
-می‌خواند و در یک FIFO (لوله‌ی نامدار) می‌ریزد؛ ffmpeg داخل py-tgcalls از همان
-FIFO می‌خواند، به ۳۶۰p تبدیل و در کال پخش می‌کند.
+معماری (تأییدشده با سورس py-tgcalls 2.3.3):
+- یوزربات کمکی فایل را تیکه‌تیکه (۱ مگ، سقف پروتکل) با stream_media می‌خواند و
+  روی یک سرور HTTP لوکال (127.0.0.1) سرو می‌کند.
+- ffmpeg (داخل ntgcalls، منبع SHELL) از این URL می‌خواند، به ۳۶۰p تبدیل می‌کند.
+- از `raw.Stream` با `MediaSource.SHELL` استفاده می‌شود که **check_stream (ffprobe)
+  را دور می‌زند** — همان چیزی که با MediaStream معمولی FileNotFoundError می‌داد.
 
-مزیت: فایل ۱ گیگی هرگز کامل روی Volume ذخیره نمی‌شود (فقط چند مگ بافر در لحظه).
-همه‌ی ترافیک روی سرور است (اینترنت کاربر مصرف نمی‌شود).
+مزیت: فایل ۱ گیگی هرگز کامل روی Volume ذخیره نمی‌شود؛ همه ترافیک روی سرور.
 """
 import asyncio
 import logging
 import os
-import tempfile
+
+from aiohttp import web
+from ntgcalls import MediaSource
+from pytgcalls.types.raw import (
+    AudioParameters,
+    AudioStream,
+    Stream,
+    VideoParameters,
+    VideoStream,
+)
 
 from bot import assistant
 
 LOGGER = logging.getLogger("musicbot.tgstream")
 
-# اندازه‌ی بافر پیش‌نگر: چند تیکه‌ی ۱ مگی که همزمان نگه داشته می‌شوند تا پخش
-# روان بماند (خواندن از تلگرام از پخش جلوتر باشد).
-_BUFFER_CHUNKS = int(os.environ.get("TG_STREAM_BUFFER_MB", "8"))  # مگابایت
+_HOST = "127.0.0.1"
+_PORT = int(os.environ.get("TG_STREAM_PORT", "8799"))
 
-# نگهداری تسک‌های فعال feeder برای هر چت (تا هنگام توقف کنسل شوند)
-_feeders: dict = {}
+# نگهداری وضعیت هر چت: message + سرور
+_active: dict = {}
+_runner = None
+_started = False
 
 
-def make_fifo(chat_id: int) -> str:
-    """یک FIFO یکتا برای این چت می‌سازد و مسیرش را برمی‌گرداند."""
-    d = tempfile.gettempdir()
-    path = os.path.join(d, f"tgstream_{chat_id}_{os.getpid()}.pipe")
-    # اگر از قبل مانده، پاک کن
+async def _handler(request: web.Request) -> web.StreamResponse:
+    """بایت‌های فایل تلگرام را به‌صورت جریانی سرو می‌کند (برای ffmpeg)."""
+    chat_id = int(request.match_info["chat_id"])
+    entry = _active.get(chat_id)
+    if not entry:
+        return web.Response(status=404, text="no active stream")
+    message = entry["message"]
+
+    resp = web.StreamResponse(status=200, headers={"Content-Type": "video/x-matroska"})
+    await resp.prepare(request)
+    written = 0
     try:
-        if os.path.exists(path):
-            os.remove(path)
-    except OSError:
-        pass
-    os.mkfifo(path)
-    return path
-
-
-async def start_feeder(chat_id: int, message) -> str:
-    """خواندن تیکه‌ای فایل از تلگرام و نوشتن در FIFO را در پس‌زمینه آغاز می‌کند.
-
-    message: پیام تلگرامی که حاوی ویدیو/فایل است (از دید یوزربات کمکی).
-    برمی‌گرداند: مسیر FIFO که به ffmpeg داده می‌شود.
-    """
-    fifo = make_fifo(chat_id)
-    stop_previous(chat_id)
-
-    async def _feed():
-        # باز کردن FIFO برای نوشتن (بلاک می‌شود تا ffmpeg سمت خواندن را باز کند)
-        fd = None
-        try:
-            # open در حالت نوشتن تا وقتی خواننده وصل نشود بلاک است؛
-            # پس در یک thread جدا باز می‌کنیم تا event loop بلاک نشود.
-            loop = asyncio.get_event_loop()
-            fd = await loop.run_in_executor(None, lambda: open(fifo, "wb"))
-            written = 0
-            async for chunk in assistant.stream_media(message):
-                if not chunk:
-                    continue
-                try:
-                    await loop.run_in_executor(None, fd.write, chunk)
-                    written += len(chunk)
-                except BrokenPipeError:
-                    # ffmpeg بسته شد (پخش تمام/متوقف) → پایان
-                    LOGGER.info("tgstream feeder: pipe closed (chat=%s, %d bytes)", chat_id, written)
-                    break
-            LOGGER.info("tgstream feeder finished (chat=%s, %d bytes)", chat_id, written)
-        except asyncio.CancelledError:
-            LOGGER.info("tgstream feeder cancelled (chat=%s)", chat_id)
-        except Exception as e:  # noqa: BLE001
-            LOGGER.warning("tgstream feeder error (chat=%s): %s", chat_id, e)
-        finally:
-            if fd is not None:
-                try:
-                    fd.close()
-                except Exception:  # noqa: BLE001
-                    pass
+        async for chunk in assistant.stream_media(message):
+            if not chunk:
+                continue
             try:
-                if os.path.exists(fifo):
-                    os.remove(fifo)
-            except OSError:
-                pass
+                await resp.write(chunk)
+                written += len(chunk)
+            except (ConnectionResetError, asyncio.CancelledError):
+                break
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("tgstream serve error (chat=%s, %d bytes): %s", chat_id, written, e)
+    finally:
+        try:
+            await resp.write_eof()
+        except Exception:  # noqa: BLE001
+            pass
+    LOGGER.info("tgstream served (chat=%s, %d bytes)", chat_id, written)
+    return resp
 
-    task = asyncio.create_task(_feed())
-    _feeders[chat_id] = (task, fifo)
-    return fifo
+
+async def _ensure_server() -> None:
+    """سرور HTTP لوکال را یک‌بار بالا می‌آورد."""
+    global _runner, _started
+    if _started:
+        return
+    app = web.Application()
+    app.router.add_get("/stream/{chat_id}", _handler)
+    _runner = web.AppRunner(app)
+    await _runner.setup()
+    site = web.TCPSite(_runner, _HOST, _PORT)
+    await site.start()
+    _started = True
+    LOGGER.info("tgstream HTTP server on %s:%d", _HOST, _PORT)
+
+
+async def build_stream(chat_id: int, message) -> Stream:
+    """یک raw.Stream (SHELL) می‌سازد که فیلم را از URL لوکال ۳۶۰p استریم می‌کند.
+
+    این Stream را باید به call.play داد. چون منبع SHELL است، py-tgcalls
+    مرحله‌ی probe (check_stream) را اجرا نمی‌کند و FileNotFoundError رخ نمی‌دهد.
+    """
+    await _ensure_server()
+    _active[chat_id] = {"message": message}
+    url = f"http://{_HOST}:{_PORT}/stream/{chat_id}"
+
+    # دستورهای ffmpeg که خروجی خام برای ntgcalls تولید می‌کنند (۳۶۰p).
+    common = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2"
+    vcmd = (
+        f"ffmpeg {common} -i {url} -v quiet "
+        f"-f rawvideo -r 20 -pix_fmt yuv420p -vf scale=640:360 pipe:1"
+    )
+    acmd = (
+        f"ffmpeg {common} -i {url} -v quiet "
+        f"-f s16le -ac 2 -ar 48000 pipe:1"
+    )
+    audio = AudioStream(MediaSource.SHELL, acmd, AudioParameters(48000, 2))
+    video = VideoStream(MediaSource.SHELL, vcmd, VideoParameters(640, 360, 20))
+    return Stream(microphone=audio, camera=video)
 
 
 def stop_previous(chat_id: int) -> None:
-    """اگر feeder فعالی برای این چت هست، کنسلش کن و FIFO را پاک کن."""
-    entry = _feeders.pop(chat_id, None)
-    if not entry:
-        return
-    task, fifo = entry
-    if task and not task.done():
-        task.cancel()
-    try:
-        if fifo and os.path.exists(fifo):
-            os.remove(fifo)
-    except OSError:
-        pass
+    """وضعیت استریم فعال این چت را پاک می‌کند."""
+    _active.pop(chat_id, None)
