@@ -8,6 +8,8 @@ import logging
 from pyrogram import Client, enums
 from pyrogram.types import CallbackQuery, Message
 
+from bot import database as db
+
 LOGGER = logging.getLogger("musicbot.auth")
 
 OWNER_ID = 8406519786  # سازنده/مالک ربات
@@ -43,8 +45,10 @@ async def is_allowed(client: Client, chat_id: int, user_id: int, is_private: boo
     """آیا این کاربر مجاز به استفاده از ربات است؟"""
     if user_id == OWNER_ID:
         return True
+    if db.is_special(user_id):  # کاربر ویژه: دسترسی سراسری (گروه و PV)
+        return True
     if is_private:
-        return False  # در PV فقط مالک
+        return False  # در PV فقط مالک و کاربران ویژه
     admins = await _admin_ids(client, chat_id)
     return user_id in admins
 

@@ -136,6 +136,37 @@ def get_users() -> List[int]:
         return [r["user_id"] for r in rows]
 
 
+# --- کاربران ویژه (دسترسی سراسری به ربات، فقط توسط مالک تنظیم می‌شود) ---
+def add_special(user_id: int, name: str = "") -> None:
+    set_setting(f"special_{user_id}", name or "1")
+
+
+def remove_special(user_id: int) -> None:
+    with _lock:
+        conn = _connect()
+        conn.execute("DELETE FROM settings WHERE key=?", (f"special_{user_id}",))
+        conn.commit()
+
+
+def is_special(user_id: int) -> bool:
+    return get_setting(f"special_{user_id}") is not None
+
+
+def list_special() -> List[int]:
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT key FROM settings WHERE key LIKE 'special_%'"
+        ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                out.append(int(r["key"].split("_", 1)[1]))
+            except (ValueError, IndexError):
+                pass
+        return out
+
+
 # --- تنظیمات کلید/مقدار ---
 def set_setting(key: str, value: str) -> None:
     with _lock:
