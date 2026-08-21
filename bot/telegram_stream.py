@@ -1,11 +1,13 @@
 """استریم مستقیم فایل حجیم تلگرام به کال (بدون دانلود کامل روی دیسک).
 
 معماری (تأییدشده با سورس py-tgcalls 2.3.3):
-- یوزربات کمکی فایل را تیکه‌تیکه (۱ مگ، سقف پروتکل) با stream_media می‌خواند و
-  روی یک سرور HTTP لوکال (127.0.0.1) سرو می‌کند.
-- ffmpeg (داخل ntgcalls، منبع SHELL) از این URL می‌خواند، به ۳۶۰p تبدیل می‌کند.
-- از `raw.Stream` با `MediaSource.SHELL` استفاده می‌شود که **check_stream (ffprobe)
-  را دور می‌زند** — همان چیزی که با MediaStream معمولی FileNotFoundError می‌داد.
+- یوزربات کمکی فایل را **یک بار** تیکه‌تیکه (۱ مگ) با stream_media می‌خواند و
+  به‌صورت broadcast به **همه‌ی** مشترک‌ها (پروسه‌های ffmpeg صدا و تصویر) می‌فرستد.
+  این کلید رفع باگ «یکی از صدا/تصویر خالی می‌ماند» است: فایل تلگرام را نمی‌توان
+  دو بار موازی خواند، پس یک reader می‌خواند و به دو صف پخش می‌کند.
+- ffmpeg (داخل ntgcalls، منبع SHELL) از URL لوکال می‌خواند.
+- از `raw.Stream` با `MediaSource.SHELL` استفاده می‌شود که check_stream (ffprobe)
+  را دور می‌زند — همان چیزی که با MediaStream معمولی FileNotFoundError می‌داد.
 
 مزیت: فایل ۱ گیگی هرگز کامل روی Volume ذخیره نمی‌شود؛ همه ترافیک روی سرور.
 """
@@ -30,45 +32,105 @@ LOGGER = logging.getLogger("musicbot.tgstream")
 _HOST = "127.0.0.1"
 _PORT = int(os.environ.get("TG_STREAM_PORT", "8799"))
 
-# نگهداری وضعیت هر چت: message + سرور
-_active: dict = {}
+# وضعیت هر چت: پیام + reader task + لیست صف مشترک‌ها + شمارش اتصال
+_state: dict = {}
 _runner = None
 _started = False
 
+_QUEUE_MAX = 64  # حداکثر تیکه در صف هر مشترک (بافر ~۶۴ مگ)
+
+
+class _Broadcast:
+    """یک reader که فایل تلگرام را یک بار می‌خواند و به چند subscriber می‌دهد."""
+
+    def __init__(self, message):
+        self.message = message
+        self.subscribers: list = []
+        self.reader_task = None
+        self.started = False
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAX)
+        self.subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        if q in self.subscribers:
+            self.subscribers.remove(q)
+
+    def start(self) -> None:
+        if not self.started:
+            self.started = True
+            self.reader_task = asyncio.create_task(self._read())
+
+    async def _read(self) -> None:
+        total = 0
+        try:
+            async for chunk in assistant.stream_media(self.message):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                # به همه‌ی مشترک‌های فعلی بده (هر کدام صف خودش)
+                for q in list(self.subscribers):
+                    try:
+                        # اگر صف پر است، منتظر بمان (کندترین مصرف‌کننده تعیین‌کننده است)
+                        await q.put(chunk)
+                    except Exception:  # noqa: BLE001
+                        pass
+            LOGGER.info("tgstream broadcast finished (%d bytes)", total)
+        except asyncio.CancelledError:
+            LOGGER.info("tgstream broadcast cancelled (%d bytes)", total)
+        except Exception as e:  # noqa: BLE001
+            LOGGER.warning("tgstream broadcast error (%d bytes): %s", total, e)
+        finally:
+            # سیگنال پایان به همه‌ی مشترک‌ها (None = EOF)
+            for q in list(self.subscribers):
+                try:
+                    q.put_nowait(None)
+                except Exception:  # noqa: BLE001
+                    pass
+
 
 async def _handler(request: web.Request) -> web.StreamResponse:
-    """بایت‌های فایل تلگرام را به‌صورت جریانی سرو می‌کند (برای ffmpeg)."""
+    """بایت‌های فایل تلگرام را به یک پروسه‌ی ffmpeg (صدا یا تصویر) سرو می‌کند.
+
+    از broadcast مشترک استفاده می‌کند تا فایل فقط یک بار از تلگرام خوانده شود.
+    """
     chat_id = int(request.match_info["chat_id"])
-    entry = _active.get(chat_id)
-    if not entry:
+    st = _state.get(chat_id)
+    if not st:
         return web.Response(status=404, text="no active stream")
-    message = entry["message"]
+    bc: _Broadcast = st["broadcast"]
 
     resp = web.StreamResponse(status=200, headers={"Content-Type": "video/x-matroska"})
     await resp.prepare(request)
+
+    q = bc.subscribe()
+    bc.start()  # اولین اتصال reader را استارت می‌کند (بقیه به همان می‌پیوندند)
     written = 0
     try:
-        async for chunk in assistant.stream_media(message):
-            if not chunk:
-                continue
+        while True:
+            chunk = await q.get()
+            if chunk is None:  # EOF
+                break
             try:
                 await resp.write(chunk)
                 written += len(chunk)
             except (ConnectionResetError, asyncio.CancelledError):
                 break
     except Exception as e:  # noqa: BLE001
-        LOGGER.warning("tgstream serve error (chat=%s, %d bytes): %s", chat_id, written, e)
+        LOGGER.debug("tgstream serve (chat=%s, %d bytes): %s", chat_id, written, e)
     finally:
+        bc.unsubscribe(q)
         try:
             await resp.write_eof()
         except Exception:  # noqa: BLE001
             pass
-    LOGGER.info("tgstream served (chat=%s, %d bytes)", chat_id, written)
+    LOGGER.info("tgstream served one consumer (chat=%s, %d bytes)", chat_id, written)
     return resp
 
 
 async def _ensure_server() -> None:
-    """سرور HTTP لوکال را یک‌بار بالا می‌آورد."""
     global _runner, _started
     if _started:
         return
@@ -83,28 +145,32 @@ async def _ensure_server() -> None:
 
 
 async def build_stream(chat_id: int, message) -> Stream:
-    """یک raw.Stream (SHELL) می‌سازد که فیلم را از URL لوکال ۳۶۰p استریم می‌کند.
+    """یک raw.Stream (SHELL) می‌سازد که فیلم را از URL لوکال استریم می‌کند.
 
-    این Stream را باید به call.play داد. چون منبع SHELL است، py-tgcalls
-    مرحله‌ی probe (check_stream) را اجرا نمی‌کند و FileNotFoundError رخ نمی‌دهد.
+    صدا و تصویر هر دو از یک broadcast مشترک تغذیه می‌شوند (فایل یک بار خوانده می‌شود).
     """
     await _ensure_server()
-    _active[chat_id] = {"message": message}
+    stop_previous(chat_id)
+    _state[chat_id] = {"broadcast": _Broadcast(message)}
     url = f"http://{_HOST}:{_PORT}/stream/{chat_id}"
 
-    # دستورهای ffmpeg که خروجی خام برای ntgcalls تولید می‌کنند.
-    #  - صدا: -vn (بدون decode ویدیوی سنگین x265) → صدا عقب نمی‌ماند
-    #  - تصویر: -an (بدون decode صدا)
-    # برای کاهش بار CPU (decode بلادرنگ x265 روی پلن محدود):
-    #   کیفیت ۲۴۰p، فریم‌ریت ۱۵، همه هسته‌ها (-threads 0).
-    # reconnect_at_eof حذف شد تا در پایان از اول شروع نکند (حلقه‌ی از-اول).
+    # کیفیت قابل تنظیم (پیش‌فرض ۳۶۰p/۲۰fps). برای CPU ضعیف: TG_STREAM_VF/FPS.
+    vparams = os.environ.get("TG_STREAM_VF", "scale=640:360")
+    vfps = int(os.environ.get("TG_STREAM_FPS", "20"))
+    vw, vh = 640, 360
+    try:
+        if vparams.startswith("scale="):
+            wh = vparams.split("=", 1)[1].split(":")
+            vw, vh = int(wh[0]), int(wh[1])
+    except Exception:  # noqa: BLE001
+        pass
+
     common = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -threads 0"
-    vparams = os.environ.get("TG_STREAM_VF", "scale=426:240")
-    vfps = os.environ.get("TG_STREAM_FPS", "15")
     vlog = f"/tmp/tgv_{chat_id}.log"
     alog = f"/tmp/tga_{chat_id}.log"
     vsh = f"/tmp/tgv_{chat_id}.sh"
     ash = f"/tmp/tga_{chat_id}.sh"
+    # منبع SHELL کاراکترهای شل (2>, |) را نمی‌پذیرد → دستور را در wrapper می‌گذاریم.
     with open(vsh, "w") as fh:
         fh.write(
             f"#!/bin/bash\nexec ffmpeg {common} -i '{url}' -an -v error "
@@ -117,11 +183,8 @@ async def build_stream(chat_id: int, message) -> Stream:
         )
     os.chmod(vsh, 0o755)
     os.chmod(ash, 0o755)
-    vcmd = f"bash {vsh}"
-    acmd = f"bash {ash}"
-    audio = AudioStream(MediaSource.SHELL, acmd, AudioParameters(48000, 2))
-    video = VideoStream(MediaSource.SHELL, vcmd, VideoParameters(426, 240, int(vfps)))
-    # لاگ ffmpeg را چند ثانیه بعد به stdout بفرست (برای دیباگ از راه دور)
+    audio = AudioStream(MediaSource.SHELL, f"bash {ash}", AudioParameters(48000, 2))
+    video = VideoStream(MediaSource.SHELL, f"bash {vsh}", VideoParameters(vw, vh, vfps))
     asyncio.create_task(_report_logs(chat_id, alog, vlog))
     return Stream(microphone=audio, camera=video)
 
@@ -143,5 +206,10 @@ async def _report_logs(chat_id: int, alog: str, vlog: str) -> None:
 
 
 def stop_previous(chat_id: int) -> None:
-    """وضعیت استریم فعال این چت را پاک می‌کند."""
-    _active.pop(chat_id, None)
+    """reader و وضعیت استریم فعال این چت را پاک می‌کند."""
+    st = _state.pop(chat_id, None)
+    if not st:
+        return
+    bc = st.get("broadcast")
+    if bc and bc.reader_task and not bc.reader_task.done():
+        bc.reader_task.cancel()
