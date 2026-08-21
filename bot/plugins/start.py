@@ -34,6 +34,7 @@ def _start_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("📖 راهنما", callback_data="h|main", style=_GREEN)],
+            [InlineKeyboardButton("🛒 خرید اشتراک", callback_data="buy|start", style=_BLUE)],
             [InlineKeyboardButton("➕ افزودن به گروه", url="https://t.me/?startgroup=true", style=_BLUE)],
         ]
     )

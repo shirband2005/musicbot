@@ -134,6 +134,9 @@ async def main():
         )
         # بکاپ فقط شبانه ساعت ۱۲ تهران فرستاده می‌شود (نه در هر بوت)
         asyncio.create_task(channel.nightly_backup_loop())
+        # زمان‌بند بررسی انقضای اشتراک‌ها (هر ساعت)
+        from bot import subscription_watch
+        asyncio.create_task(subscription_watch.expiry_loop(app))
     except Exception as e:  # noqa: BLE001
         logs.warn("startup channel log: %s", e)
     logs.info("🎵 ربات آماده است.")

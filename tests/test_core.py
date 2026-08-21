@@ -291,9 +291,7 @@ def test_archive_random(fresh_db):
 
 def test_history_capped(fresh_db):
     """تاریخچه‌ی پخش نباید بی‌نهایت رشد کند (جلوگیری از نشت حافظه)."""
-    import importlib
-    import bot.queue as q
-    importlib.reload(q)
+    from bot import queue as q
     cid = -100888
 
     def mk(i):
@@ -303,6 +301,49 @@ def test_history_capped(fresh_db):
     for i in range(50):
         q.set_now_playing(cid, mk(i))
     assert len(q._history.get(cid, [])) <= q._HISTORY_MAX
+
+
+def test_subscription_activate_and_expire(fresh_db):
+    """فعال‌سازی، تیر، انقضا و تمدید اشتراک."""
+    from bot import subscription as sub
+    cid = -100555
+    assert sub.is_active(cid) is False
+    # فعال‌سازی ۱ ماهه پایه
+    exp = sub.activate(cid, sub.TIER_BASIC, 1, buyer_id=42)
+    assert exp > 0 and sub.is_active(cid) is True
+    assert sub.get_tier(cid) == sub.TIER_BASIC
+    assert sub.is_pro(cid) is False
+    # ارتقا به دائمی حرفه‌ای
+    exp2 = sub.activate(cid, sub.TIER_PRO, 0, buyer_id=42)
+    assert exp2 == 0 and sub.is_pro(cid) is True
+    # لغو
+    sub.deactivate(cid)
+    assert sub.is_active(cid) is False
+
+
+def test_pay_settings_and_prices(fresh_db):
+    """قیمت‌ها و تنظیمات پرداخت قابل ذخیره/بازیابی‌اند."""
+    from bot import subscription as sub
+    from bot import database as db
+    # پیش‌فرض
+    assert sub.get_price(sub.TIER_PRO, 1, "stars") > 0
+    # override
+    sub.set_price(sub.TIER_PRO, 1, "stars", 999)
+    assert sub.get_price(sub.TIER_PRO, 1, "stars") == 999
+    db.pay_set("card_number", "6037-xxxx")
+    assert db.pay_get("card_number") == "6037-xxxx"
+
+
+def test_orders_flow(fresh_db):
+    """ساخت سفارش، تغییر وضعیت، لیست pending."""
+    from bot import database as db
+    db.order_create("abc123", 42, -100, "pro", 3, 250, "stars")
+    o = db.order_get("abc123")
+    assert o and o["status"] == "pending"
+    assert len(db.orders_pending()) == 1
+    db.order_set_status("abc123", "paid", ref="charge_1")
+    assert db.order_get("abc123")["status"] == "paid"
+    assert len(db.orders_pending()) == 0
 
 
 # ---------------- migration از settings قدیمی ----------------

@@ -88,6 +88,34 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             is_video    INTEGER DEFAULT 0,
             added_at    REAL DEFAULT 0
         );
+        -- اشتراک هر گروه
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            chat_id       INTEGER PRIMARY KEY,
+            tier          TEXT DEFAULT 'basic',   -- basic | pro
+            expires_at    REAL DEFAULT 0,         -- 0 = دائمی، وگرنه timestamp انقضا
+            buyer_id      INTEGER DEFAULT 0,
+            started_at    REAL DEFAULT 0,
+            last_notified REAL DEFAULT 0          -- ضد اسپم پیام تمدید
+        );
+        -- سفارش‌های پرداخت (همه‌ی روش‌ها)
+        CREATE TABLE IF NOT EXISTS orders (
+            id         TEXT PRIMARY KEY,   -- uuid
+            buyer_id   INTEGER,
+            chat_id    INTEGER,
+            tier       TEXT,
+            months     INTEGER,            -- 0 = دائمی
+            amount     INTEGER,            -- مبلغ (تومان یا تعداد Stars)
+            method     TEXT,               -- stars | card | crypto
+            status     TEXT DEFAULT 'pending',  -- pending | paid | rejected | expired
+            ref        TEXT DEFAULT '',    -- شناسه تراکنش/رسید
+            created_at REAL,
+            paid_at    REAL DEFAULT 0
+        );
+        -- تنظیمات پرداخت (key/value) — قابل ویرایش از پنل مالک
+        CREATE TABLE IF NOT EXISTS pay_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
         """
     )
     conn.commit()
@@ -474,3 +502,122 @@ def get_setting(key: str, default: str | None = None) -> str | None:
         conn = _connect()
         row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return row["value"] if row else default
+
+
+# --- اشتراک گروه‌ها ---
+def sub_get(chat_id: int) -> Optional[dict]:
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT chat_id, tier, expires_at, buyer_id, started_at, last_notified "
+            "FROM subscriptions WHERE chat_id=?", (chat_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
+def sub_set(chat_id: int, **fields) -> None:
+    allowed = {"tier", "expires_at", "buyer_id", "started_at", "last_notified"}
+    fields = {k: v for k, v in fields.items() if k in allowed}
+    if not fields:
+        return
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO subscriptions(chat_id) VALUES (?) ON CONFLICT(chat_id) DO NOTHING",
+            (chat_id,),
+        )
+        sets = ", ".join(f"{k}=?" for k in fields)
+        conn.execute(f"UPDATE subscriptions SET {sets} WHERE chat_id=?",
+                     (*fields.values(), chat_id))
+        conn.commit()
+
+
+def sub_delete(chat_id: int) -> None:
+    with _lock:
+        conn = _connect()
+        conn.execute("DELETE FROM subscriptions WHERE chat_id=?", (chat_id,))
+        conn.commit()
+
+
+def sub_all() -> list:
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT chat_id, tier, expires_at, buyer_id, started_at, last_notified "
+            "FROM subscriptions ORDER BY expires_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def sub_expired(now_ts: float) -> list:
+    """اشتراک‌های منقضی‌شده (expires_at>0 و < now) برای زمان‌بند."""
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT chat_id, tier, expires_at, buyer_id, last_notified "
+            "FROM subscriptions WHERE expires_at>0 AND expires_at<?", (now_ts,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# --- سفارش‌های پرداخت ---
+def order_create(oid: str, buyer_id: int, chat_id: int, tier: str, months: int,
+                 amount: int, method: str) -> None:
+    import time
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO orders(id, buyer_id, chat_id, tier, months, amount, method, "
+            "status, created_at) VALUES (?,?,?,?,?,?,?, 'pending', ?)",
+            (oid, buyer_id, chat_id, tier, months, amount, method, time.time()),
+        )
+        conn.commit()
+
+
+def order_get(oid: str) -> Optional[dict]:
+    with _lock:
+        conn = _connect()
+        row = conn.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+        return dict(row) if row else None
+
+
+def order_set_status(oid: str, status: str, ref: str = "") -> None:
+    import time
+    with _lock:
+        conn = _connect()
+        paid = time.time() if status == "paid" else 0
+        conn.execute(
+            "UPDATE orders SET status=?, ref=?, paid_at=? WHERE id=?",
+            (status, ref, paid, oid),
+        )
+        conn.commit()
+
+
+def orders_pending() -> list:
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT * FROM orders WHERE status='pending' ORDER BY created_at DESC LIMIT 50"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# --- تنظیمات پرداخت (key/value) ---
+def pay_get(key: str, default: str = "") -> str:
+    with _lock:
+        conn = _connect()
+        row = conn.execute("SELECT value FROM pay_settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def pay_set(key: str, value: str) -> None:
+    with _lock:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO pay_settings(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, str(value)),
+        )
+        conn.commit()
