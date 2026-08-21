@@ -137,3 +137,94 @@ async def backup_db(force: bool = False) -> None:
         LOGGER.info("DB BACKUP sent to log channel")
     except Exception as e:  # noqa: BLE001
         LOGGER.warning("db backup failed: %s", e)
+
+
+# ---------------- بکاپ رمزنگاری‌شده‌ی env (برای انتقال کامل سرور) ----------------
+# متغیرهای حساسی که برای راه‌اندازی ربات روی سرور جدید لازم‌اند
+_ENV_KEYS = [
+    "API_ID", "API_HASH", "BOT_TOKEN", "STRING_SESSION", "OWNER_ID",
+    "LOG_CHANNEL", "ARCHIVE_CHANNEL", "COOKIES_B64", "PROXY_LIST",
+    "POT_BASE_URL", "JS_RUNTIME", "DOWNLOAD_DIR", "DL_HARD_TIMEOUT",
+    "DB_PATH", "COVER_PATH", "USE_SOUNDCLOUD", "SC_TIMEOUT",
+    "DURATION_LIMIT", "CACHE_KEEP", "MP3_QUALITY", "AUDIO_FORMAT",
+    "VIDEO_FORMAT", "USE_FREE_PROXIES", "PROXY_MAX_TRY", "PROXY_TIMEOUT",
+    "ATTEMPT_HARD_TIMEOUT", "BACKUP_KEY",
+]
+
+
+def _fernet():
+    """کلید رمزنگاری از BACKUP_KEY می‌سازد (Fernet). None اگر کتابخانه/کلید نباشد."""
+    key = os.environ.get("BACKUP_KEY", "").strip()
+    if not key:
+        return None
+    try:
+        import base64
+        import hashlib
+        from cryptography.fernet import Fernet
+        # هر رشته‌ای را به کلید ۳۲بایتی معتبر Fernet تبدیل کن
+        digest = hashlib.sha256(key.encode()).digest()
+        return Fernet(base64.urlsafe_b64encode(digest))
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("fernet init failed: %s", e)
+        return None
+
+
+async def backup_env() -> None:
+    """متغیرهای env حساس را رمزنگاری و به کانال لاگ می‌فرستد.
+
+    نیاز به BACKUP_KEY (رمز دلخواه) دارد؛ بدون آن هیچ چیزی فرستاده نمی‌شود
+    (تا توکن‌ها لخت لو نروند). برای بازیابی: فایل .env.bak را با همان کلید
+    رمزگشایی کن (اسکریپت restore_env.py).
+    """
+    if not config.LOG_CHANNEL:
+        return
+    f = _fernet()
+    if f is None:
+        LOGGER.info("env backup skipped (BACKUP_KEY تنظیم نشده)")
+        return
+    try:
+        import json
+        import tempfile
+        data = {k: os.environ.get(k, "") for k in _ENV_KEYS if os.environ.get(k, "")}
+        blob = f.encrypt(json.dumps(data, ensure_ascii=False).encode())
+        tmp = os.path.join(tempfile.gettempdir(), "env.bak")
+        with open(tmp, "wb") as fh:
+            fh.write(blob)
+        await app.send_document(
+            config.LOG_CHANNEL, tmp,
+            caption="🔐 بکاپ رمزنگاری‌شده‌ی تنظیمات (env)\n"
+                    "برای بازیابی: `python restore_env.py env.bak` با همان BACKUP_KEY.",
+            file_name="env.bak",
+        )
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        LOGGER.info("ENV BACKUP sent (encrypted)")
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("env backup failed: %s", e)
+
+
+async def nightly_backup_loop() -> None:
+    """هر شب ساعت مشخص (پیش‌فرض ۰۰:۰۰ به وقت تهران) بکاپ کامل می‌فرستد.
+
+    BACKUP_HOUR (ساعت محلی، پیش‌فرض 0) و BACKUP_TZ_OFFSET (دقیقه، پیش‌فرض 210=+3:30).
+    """
+    import asyncio
+    hour = int(os.environ.get("BACKUP_HOUR", "0"))
+    tz_off = int(os.environ.get("BACKUP_TZ_OFFSET", "210"))  # تهران +3:30
+    while True:
+        now = time.time() + tz_off * 60  # زمان محلی
+        lt = time.gmtime(now)
+        # ثانیه تا ساعت هدف بعدی
+        secs_today = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec
+        target = hour * 3600
+        wait = target - secs_today
+        if wait <= 0:
+            wait += 24 * 3600
+        await asyncio.sleep(wait)
+        try:
+            await backup_db(force=True)
+            await backup_env()
+        except Exception as e:  # noqa: BLE001
+            LOGGER.warning("nightly backup: %s", e)

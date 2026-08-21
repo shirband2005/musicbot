@@ -112,6 +112,9 @@ async def main():
             f"• آهنگ‌های آرشیو: {_db.archive_count()}"
         )
         await channel.backup_db(force=True)
+        await channel.backup_env()
+        # زمان‌بند بکاپ شبانه (هر شب ۰۰:۰۰ به وقت تهران)
+        asyncio.create_task(channel.nightly_backup_loop())
     except Exception as e:  # noqa: BLE001
         logs.warn("startup channel log: %s", e)
     logs.info("🎵 ربات آماده است.")
