@@ -11,8 +11,11 @@ from pytgcalls.types import AudioQuality, MediaStream, VideoQuality
 from bot import app, call
 from bot import database as db
 from bot import logs
+from bot import panel as panel_mod
 from bot import queue as q
+from bot import sleep_timer
 from bot import soundcloud
+from bot import ui
 from bot import youtube
 from bot.panel import (
     cover_file,
@@ -34,6 +37,7 @@ DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "/data/downloads").strip() or "/da
 
 _panel_msg: Dict[int, int] = {}
 _panel_media: Dict[int, str] = {}  # نوع رسانه فعلی پنل: anim/static/photo/text
+_panel_sig: Dict[int, str] = {}    # امضای آخرین محتوای ارسال‌شده (رفرش شرطی)
 _updater: Dict[int, asyncio.Task] = {}
 _volume: Dict[int, int] = {}
 _muted: Dict[int, bool] = {}
@@ -78,6 +82,39 @@ def is_muted(chat_id: int) -> bool:
 
 def set_muted(chat_id: int, val: bool) -> None:
     _muted[chat_id] = val
+
+
+# ---------------------------------------------------------------- تایمر خواب
+def sleep_left(chat_id: int):
+    """ثانیه‌ی باقی‌مانده‌ی تایمر خواب این گروه (None = خاموش)."""
+    return sleep_timer.left(chat_id)
+
+
+def sleep_start(chat_id: int, minutes: int) -> float:
+    return sleep_timer.start(chat_id, minutes)
+
+
+def sleep_cancel(chat_id: int) -> bool:
+    return sleep_timer.cancel(chat_id)
+
+
+async def _on_sleep_expire(chat_id: int) -> None:
+    """پایان تایمر خواب: پخش قطع، خروج از ویس‌چت، اطلاع در گروه."""
+    LOGGER.info("تایمر خواب سر رسید — پایان پخش (chat=%s)", chat_id)
+    try:
+        await stop(chat_id)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("stop در پایان تایمر خواب: %s", e)
+    t = ui.Text().title(ui.EMO_BELL, ui.BASE_ARROW, "تایمر خواب")
+    t.line(0, "زمان تعیین‌شده تمام شد؛ پخش پایان یافت و از ویس‌چت خارج شدم.")
+    t.italic("شب خوش.")
+    try:
+        await app.send_message(chat_id, t.text, entities=t.entities)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("پیام پایان تایمر خواب: %s", e)
+
+
+sleep_timer.set_expire_handler(_on_sleep_expire)
 
 
 def _stream(track: Track) -> MediaStream:
@@ -505,6 +542,9 @@ async def stop(chat_id: int) -> None:
     q.clear(chat_id)
     _cancel_updater(chat_id)
     _muted.pop(chat_id, None)
+    _panel_sig.pop(chat_id, None)
+    panel_mod.reset_menus(chat_id)
+    sleep_timer.cancel(chat_id)
     await _delete_panel(chat_id)
     try:
         await call.leave_call(chat_id)
@@ -519,6 +559,9 @@ async def end_playback(chat_id: int) -> None:
     q.end_current(chat_id)
     _cancel_updater(chat_id)
     _muted.pop(chat_id, None)
+    _panel_sig.pop(chat_id, None)
+    panel_mod.reset_menus(chat_id)
+    sleep_timer.cancel(chat_id)
     await _delete_panel(chat_id)
     try:
         await call.leave_call(chat_id)
@@ -534,11 +577,13 @@ async def _send_panel(chat_id: int, new: bool = False) -> None:
 
     # همیشه پنل قبلی این گروه را (هرجا بود) حذف کن تا چت شلوغ نشود.
     await _delete_panel(chat_id)
+    # آهنگ عوض شده → منوهای آکاردئونی باز نباید به پنل جدید منتقل شوند.
+    panel_mod.reset_menus(chat_id)
 
     vol, muted = get_volume(chat_id), is_muted(chat_id)
-    text = panel_text(track, vol, muted)
-    ents = panel_entities(track, vol, muted)
-    kb = panel_keyboard(chat_id, track, vol, muted)
+    text = panel_text(track, vol, muted, chat_id)
+    ents = panel_entities(track, vol, muted, chat_id)
+    kb = panel_keyboard(chat_id, track, vol, muted, sleep_left(chat_id))
     cover = cover_file()
     static = cover_static_file()
     try:
@@ -580,6 +625,7 @@ async def _send_panel(chat_id: int, new: bool = False) -> None:
 async def _delete_panel(chat_id: int) -> None:
     mid = _panel_msg.pop(chat_id, None)
     _panel_media.pop(chat_id, None)
+    _panel_sig.pop(chat_id, None)
     if mid:
         try:
             await app.delete_messages(chat_id, mid)
@@ -587,15 +633,26 @@ async def _delete_panel(chat_id: int) -> None:
             pass
 
 
-async def refresh_panel(chat_id: int) -> None:
+async def refresh_panel(chat_id: int, force: bool = False) -> None:
+    """پنل را به‌روز می‌کند — **فقط اگر محتوا واقعاً عوض شده باشد**.
+
+    نوار زمان هر PROGRESS_INTERVAL ثانیه رفرش می‌خورد، ولی برچسبش تنها وقتی
+    عوض می‌شود که ثانیه‌ی نمایشی تغییر کند. بدون این بررسی، تلگرام خطای
+    «message is not modified» می‌دهد و درخواست هدر می‌رود (با چند گروه همزمان،
+    ریسک FloodWait). force=True برای کلیک دستی کاربر روی «تازه‌سازی».
+    """
     track = q.now_playing(chat_id)
     mid = _panel_msg.get(chat_id)
     if track is None or mid is None:
         return
     vol, muted = get_volume(chat_id), is_muted(chat_id)
-    text = panel_text(track, vol, muted)
-    ents = panel_entities(track, vol, muted)
-    kb = panel_keyboard(chat_id, track, vol, muted)
+    text = panel_text(track, vol, muted, chat_id)
+    ents = panel_entities(track, vol, muted, chat_id)
+    kb = panel_keyboard(chat_id, track, vol, muted, sleep_left(chat_id))
+
+    sig = ui.signature(text, kb)
+    if not force and _panel_sig.get(chat_id) == sig:
+        return
 
     # آیا باید نوع کاور عوض شود؟ (پخش=متحرک، مکث=ثابت)
     anim = cover_file()
@@ -621,8 +678,9 @@ async def refresh_panel(chat_id: int) -> None:
                                            caption_entities=ents, reply_markup=kb)
         else:
             await app.edit_message_text(chat_id, mid, text, entities=ents, reply_markup=kb)
+        _panel_sig[chat_id] = sig
     except MessageNotModified:
-        pass
+        _panel_sig[chat_id] = sig
     except Exception as e:  # noqa: BLE001
         LOGGER.debug("refresh_panel: %s", e)
 

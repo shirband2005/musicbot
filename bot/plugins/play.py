@@ -60,6 +60,16 @@ def _requester_name(message: Message) -> str:
     return u.first_name or (u.username and "@" + u.username) or str(u.id)
 
 
+def _requester_id(message: Message) -> int:
+    """شناسه‌ی عددی درخواست‌کننده — برای منشن قابل کلیک در پنل.
+
+    منشن با شناسه‌ی عددی (text_mention) به یوزرنیم عمومی نیاز ندارد، پس برای
+    کاربرانی که یوزرنیم ندارند هم کار می‌کند.
+    """
+    u = message.from_user
+    return int(u.id) if u else 0
+
+
 async def _play_track(client: Client, message: Message, info: dict, is_video: bool, query: str, status):
     """یک نتیجه‌ی آماده را پخش/به صف اضافه می‌کند و پیام مناسب می‌دهد."""
     if not info.get("stream_url"):
@@ -81,6 +91,7 @@ async def _play_track(client: Client, message: Message, info: dict, is_video: bo
         duration_text=info["duration_text"],
         thumbnail=info.get("thumbnail"),
         requester=_requester_name(message),
+        requester_id=_requester_id(message),
         is_video=is_video,
         query=query,
         video_id=info.get("id") or "",
@@ -268,7 +279,8 @@ async def _play_telegram_file(client: Client, message: Message) -> bool:
         track = Track(
             title=title, stream_url="", webpage_url="",
             duration=dur, duration_text=_fmt_dur(dur), thumbnail=None,
-            requester=_requester_name(message), is_video=True,
+            requester=_requester_name(message),
+            requester_id=_requester_id(message), is_video=True,
             query="", video_id="", source="telegram_stream",
             tg_chat_id=message.chat.id, tg_msg_id=reply.id,
         )
@@ -302,7 +314,8 @@ async def _play_telegram_file(client: Client, message: Message) -> bool:
     track = Track(
         title=title, stream_url=path, webpage_url="",
         duration=dur, duration_text=_fmt_dur(dur), thumbnail=None,
-        requester=_requester_name(message), is_video=is_video,
+        requester=_requester_name(message),
+        requester_id=_requester_id(message), is_video=is_video,
         query="", video_id="", source="telegram",
     )
     track.local_path = path
