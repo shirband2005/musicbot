@@ -12,6 +12,7 @@ from bot import app, call
 from bot import database as db
 from bot import logs
 from bot import panel as panel_mod
+from bot import panel_video
 from bot import playlist_page
 from bot import queue as q
 from bot import sleep_timer
@@ -581,10 +582,7 @@ async def _send_panel(chat_id: int, new: bool = False) -> None:
     # آهنگ عوض شده → منوهای آکاردئونی باز نباید به پنل جدید منتقل شوند.
     panel_mod.reset_menus(chat_id)
 
-    vol, muted = get_volume(chat_id), is_muted(chat_id)
-    text = panel_text(track, vol, muted, chat_id)
-    ents = panel_entities(track, vol, muted, chat_id)
-    kb = panel_keyboard(chat_id, track, vol, muted, sleep_left(chat_id))
+    text, ents, kb = _render(chat_id, track)
     cover = cover_file()
     static = cover_static_file()
     try:
@@ -635,10 +633,18 @@ async def _delete_panel(chat_id: int) -> None:
 
 
 def _render(chat_id: int, track: Track):
-    """محتوای فعلی پیام پنل را می‌سازد: پنل پخش یا صفحه‌ی لیست پخش.
+    """محتوای فعلی پیام پنل را می‌سازد: پنل فیلم، پنل پخش، یا صفحه‌ی لیست.
 
     برمی‌گرداند (text, entities, keyboard).
     """
+    vol, muted = get_volume(chat_id), is_muted(chat_id)
+
+    # فیلم پنل خودش را دارد (بدون صف، بدون پلتفرم، بدون حالت پخش)
+    if track.is_video:
+        text, ents = panel_video.content(track, vol, muted, chat_id)
+        return text, ents, panel_video.keyboard(chat_id, track, vol, muted,
+                                                sleep_left(chat_id))
+
     if panel_mod.get_view(chat_id) == panel_mod.VIEW_PLAYLIST:
         items = list(q.get_queue(chat_id))
         page = playlist_page.clamp_page(panel_mod.get_view_page(chat_id), len(items))
@@ -648,7 +654,6 @@ def _render(chat_id: int, track: Track):
         text, ents = playlist_page.content(track, items, page)
         return text, ents, playlist_page.keyboard(items, page)
 
-    vol, muted = get_volume(chat_id), is_muted(chat_id)
     return (
         panel_text(track, vol, muted, chat_id),
         panel_entities(track, vol, muted, chat_id),

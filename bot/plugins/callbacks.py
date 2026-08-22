@@ -1,4 +1,5 @@
-"""روتر دکمه‌های پنل پخش موزیک (`p|*`) و ناوبری راهنما (`h|*`).
+"""روتر دکمه‌های پنل‌ها: پنل موزیک (`p|*`)، لیست پخش (`q|*`)،
+پنل فیلم (`v|*`) و ناوبری راهنما (`h|*`).
 
 الگوی callback جدید:
     p|refresh                 تازه‌سازی دستی نوار زمان
@@ -450,3 +451,168 @@ async def playlist_cb(client: Client, cq: CallbackQuery):
         return
 
     await cq.answer()
+
+
+# ==================================================================
+#                    پنل فیلم: `v|*`
+# ==================================================================
+# فیلم صف ندارد، پس «قبلی/بعدی/لیست/حالت/پلتفرم» وجود ندارند.
+# کنش‌های مشترک (مکث، توقف، صدا، تایمر، دریافت) همان منطق پنل موزیک را
+# استفاده می‌کنند تا رفتار دو پنل از هم واگرا نشود.
+@Client.on_callback_query(filters.regex(r"^v\|"))
+async def video_panel_cb(client: Client, cq: CallbackQuery):
+    if not await auth.guard_callback(client, cq):
+        return
+    if not cq.message or not cq.message.chat:
+        await cq.answer()
+        return
+
+    chat_id = int(cq.message.chat.id or 0)
+    parts = str(cq.data or "").split("|")
+    action = parts[1] if len(parts) > 1 else ""
+    arg = parts[2] if len(parts) > 2 else None
+    if not chat_id:
+        await cq.answer()
+        return
+
+    if action == "close":
+        panel_mod.reset_menus(chat_id)
+        try:
+            await cq.message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        await cq.answer("پنل بسته شد")
+        return
+
+    track = q.now_playing(chat_id)
+    if track is None:
+        await cq.answer("چیزی در حال پخش نیست.", show_alert=True)
+        return
+
+    if action == "playpause":
+        if track.paused:
+            await call.resume(chat_id)
+            track.mark_resumed()
+            await cq.answer("ادامه یافت")
+        else:
+            await call.pause(chat_id)
+            track.mark_paused()
+            await cq.answer("متوقف شد")
+        await player.refresh_panel(chat_id, force=True)
+        return
+
+    if action == "stop":
+        await player.stop(chat_id)
+        try:
+            await cq.message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        await cq.answer("پخش متوقف شد")
+        return
+
+    if action in ("vol_up", "vol_down"):
+        vol = player.get_volume(chat_id) + (10 if action == "vol_up" else -10)
+        player.set_volume(chat_id, vol)
+        if player.get_volume(chat_id) > 0:
+            player.set_muted(chat_id, False)
+        await _apply_volume(chat_id)
+        await player.refresh_panel(chat_id, force=True)
+        await cq.answer(f"صدا: {ui.fa(player.get_volume(chat_id))}%")
+        return
+
+    if action == "mute":
+        new_state = not player.is_muted(chat_id)
+        player.set_muted(chat_id, new_state)
+        await _apply_volume(chat_id)
+        await player.refresh_panel(chat_id, force=True)
+        await cq.answer("بیصدا شد" if new_state else "صدادار شد")
+        return
+
+    # --- تایمر خواب (همان منطق پنل موزیک) ---
+    if action == "sleep_open":
+        panel_mod.set_menu(chat_id, panel_mod.MENU_SLEEP)
+        await player.refresh_panel(chat_id, force=True)
+        await cq.answer()
+        return
+
+    if action == "sleep_set":
+        try:
+            minutes = int(arg or 0)
+        except ValueError:
+            minutes = 0
+        if minutes <= 0:
+            await cq.answer("زمان نامعتبر", show_alert=True)
+            return
+        player.sleep_start(chat_id, minutes)
+        panel_mod.set_menu(chat_id, None)
+        await player.refresh_panel(chat_id, force=True)
+        await cq.answer(f"تایمر خواب روی {ui.fa(minutes)} دقیقه تنظیم شد")
+        return
+
+    if action == "sleep_off":
+        player.sleep_cancel(chat_id)
+        panel_mod.set_menu(chat_id, None)
+        await player.refresh_panel(chat_id, force=True)
+        await cq.answer("تایمر خواب خاموش شد")
+        return
+
+    if action == "getmedia":
+        await cq.answer("در حال آماده‌سازی فیلم…")
+        await _send_video_file(client, chat_id, track)
+        return
+
+    if action == "refresh":
+        await player.refresh_panel(chat_id, force=True)
+        await cq.answer("بروزرسانی شد")
+        return
+
+    await cq.answer()
+
+
+async def _send_video_file(client: Client, chat_id: int, track) -> None:
+    """فایل فیلم در حال پخش را در گروه می‌فرستد."""
+    status = None
+    try:
+        t = ui.Text().title(ui.EMO_DOWNLOAD, ui.BASE_ARROW, "در حال آماده‌سازی فیلم")
+        t.line(0, ui.trunc(track.title, 46))
+        status = await client.send_message(chat_id, t.text, entities=t.entities)
+
+        if track.local_path and os.path.isfile(track.local_path):
+            path = track.local_path
+            info = {"path": path, "title": track.title, "duration": track.duration}
+            tmp = False
+        else:
+            query = track.query or track.webpage_url or track.title
+            info = await youtube.download_media(query, video=True,
+                                                out_dir=player.DOWNLOAD_DIR)
+            path = info["path"]
+            tmp = True
+        if not path or not os.path.isfile(path):
+            raise FileNotFoundError("فایل دانلود پیدا نشد")
+
+        await client.send_video(
+            chat_id,
+            video=path,
+            caption=info.get("title", track.title),
+            duration=int(info.get("duration") or 0),
+            supports_streaming=True,
+        )
+        if status:
+            await status.delete()
+        if tmp and path not in db.cache_paths():
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("getmedia video: %s", e)
+        t = ui.Text().title(ui.EMO_DOWNLOAD, ui.BASE_ARROW, "دریافت فیلم ناموفق بود")
+        t.why("فایل بیش از حد بزرگ است یا منبع پاسخ نداد.")
+        t.how("چند لحظه بعد دوباره امتحان کن.")
+        try:
+            if status:
+                await status.edit_text(t.text, entities=t.entities)
+            else:
+                await client.send_message(chat_id, t.text, entities=t.entities)
+        except Exception:  # noqa: BLE001
+            pass
