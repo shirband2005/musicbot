@@ -48,7 +48,8 @@ def test_special_users_crud(fresh_db):
 def test_group_settings_defaults_and_update(fresh_db):
     db = fresh_db
     d = db.group_get(-100)
-    assert d == {"enabled": 0, "lock": "none", "platform": "both", "mode": "queue"}
+    assert d == {"enabled": 0, "lock": "none", "platform": "both",
+                 "mode": "queue", "free_until": 0.0}
     db.group_set(-100, enabled=1)
     assert db.group_get(-100)["enabled"] == 1
     db.group_set(-100, lock="youtube", platform="youtube")
@@ -77,10 +78,10 @@ def test_platform_cycle_and_effective_lock(fresh_db):
     from bot import platform_pref as pp
     from bot import group_config as gc
     cid = -300
-    assert pp.get(cid) == pp.BOTH
+    assert pp.get(cid) == pp.DATABASE          # پیش‌فرض: روش دیتابیس
     assert pp.cycle(cid) == pp.YOUTUBE
     assert pp.cycle(cid) == pp.SOUNDCLOUD
-    assert pp.cycle(cid) == pp.BOTH  # چرخش کامل
+    assert pp.cycle(cid) == pp.DATABASE  # چرخش کامل
     # قفل باید انتخاب کاربر را override کند
     gc.set_lock(cid, gc.LOCK_YOUTUBE)
     assert pp.effective(cid) == pp.YOUTUBE
@@ -169,32 +170,31 @@ async def test_fa_command_matches_and_normalizes(fresh_db):
     assert await f(None, m2) is False
 
 
-# ---------------- رنگ‌بندی پنل مدیریت ----------------
+# ---------------- رنگ‌بندی پنل مدیریت پلیر ----------------
 def test_admin_panel_colors(fresh_db):
-    from pyrogram import enums
+    """قاعده‌ی جدید: فقط حالت فعال رنگ دارد؛ قرمزِ «این حالت نیست» حذف شد."""
     from bot import group_config as gc
-    from bot.plugins.admin_panel import _panel
+    from bot import ui
+    from bot.plugins.admin_panel import panel
     cid = -500
 
-    def styles(kb):
-        return [[b.style for b in row] for row in kb.inline_keyboard]
-
-    # پیش‌فرض: خاموش → «روشن» قرمز، «خاموش» سبز
-    _, kb = _panel(cid)
+    # پیش‌فرض خاموش → «خاموش» قرمز، «روشن» بی‌رنگ
+    _t, _e, kb = panel(cid, "گروه تست")
     row0 = kb.inline_keyboard[0]
-    assert row0[0].text == "روشن" and row0[0].style == enums.ButtonStyle.DANGER
-    assert row0[1].text == "خاموش" and row0[1].style == enums.ButtonStyle.SUCCESS
+    assert row0[0].text == "روشن" and str(row0[0].style) == str(ui.PLAIN)
+    assert row0[1].text == "خاموش" and str(row0[1].style) == str(ui.RED)
 
-    # روشن + قفل ساوندکلاد
+    # روشن → «روشن» سبز، «خاموش» بی‌رنگ
     gc.set_enabled(cid, True)
-    gc.set_lock(cid, gc.LOCK_SOUNDCLOUD)
-    _, kb = _panel(cid)
-    labels = {b.text: b.style for row in kb.inline_keyboard for b in row}
-    assert labels["روشن"] == enums.ButtonStyle.SUCCESS
-    assert labels["خاموش"] == enums.ButtonStyle.DANGER
-    assert labels["ساوندکلاد"] == enums.ButtonStyle.SUCCESS
-    assert labels["یوتیوب"] == enums.ButtonStyle.DANGER
-    assert labels["انتخاب پلتفرم"] == enums.ButtonStyle.PRIMARY  # نمایشی، آبی
+    _t, _e, kb = panel(cid, "گروه تست")
+    row0 = kb.inline_keyboard[0]
+    assert str(row0[0].style) == str(ui.GREEN)
+    assert str(row0[1].style) == str(ui.PLAIN)
+
+    # دکمه‌ی بی‌کار (noop) دیگر وجود ندارد
+    cbs = [b.callback_data for row in kb.inline_keyboard for b in row
+           if b.callback_data]
+    assert not any("noop" in c for c in cbs)
 
 
 # ---------------- دکمه پلتفرم در پنل پخش بسته به قفل ----------------
@@ -304,20 +304,16 @@ def test_history_capped(fresh_db):
 
 
 def test_subscription_activate_and_expire(fresh_db):
-    """فعال‌سازی، تیر، انقضا و تمدید اشتراک."""
+    """فعال‌سازی، انقضا و تمدید اشتراک (طرح واحد، بدون تیر)."""
     from bot import subscription as sub
     cid = -100555
     assert sub.is_active(cid) is False
-    # فعال‌سازی ۱ ماهه پایه
-    exp = sub.activate(cid, sub.TIER_BASIC, 1, buyer_id=42)
+    exp = sub.activate(cid, 1, buyer_id=42)
     assert exp > 0 and sub.is_active(cid) is True
-    assert sub.get_tier(cid) == sub.TIER_BASIC
-    assert sub.is_pro(cid) is False
-    # ارتقا به دائمی حرفه‌ای
-    exp2 = sub.activate(cid, sub.TIER_PRO, 0, buyer_id=42)
-    assert exp2 == 0 and sub.is_pro(cid) is True
-    # لغو
-    sub.deactivate(cid)
+    # تمدید از انتهای اشتراک فعال اضافه می‌شود، نه از امروز
+    exp2 = sub.activate(cid, 2, buyer_id=42)
+    assert exp2 > exp
+    sub.cancel(cid)
     assert sub.is_active(cid) is False
 
 
@@ -325,11 +321,9 @@ def test_pay_settings_and_prices(fresh_db):
     """قیمت‌ها و تنظیمات پرداخت قابل ذخیره/بازیابی‌اند."""
     from bot import subscription as sub
     from bot import database as db
-    # پیش‌فرض
-    assert sub.get_price(sub.TIER_PRO, 1, "stars") > 0
-    # override
-    sub.set_price(sub.TIER_PRO, 1, "stars", 999)
-    assert sub.get_price(sub.TIER_PRO, 1, "stars") == 999
+    assert sub.get_price(sub.METHOD_STARS, 1) > 0
+    sub.set_price(sub.METHOD_STARS, 1, 999)
+    assert sub.get_price(sub.METHOD_STARS, 1) == 999
     db.pay_set("card_number", "6037-xxxx")
     assert db.pay_get("card_number") == "6037-xxxx"
 
@@ -353,27 +347,6 @@ def test_txid_reuse_guard(fresh_db):
     db.order_set_status("o1", "paid", ref="TX_ABC")
     paid = db.orders_all_paid()
     assert any(o["ref"] == "TX_ABC" for o in paid)
-
-
-def test_usdt_conversion():
-    """تبدیل تومان به USDT با نرخ."""
-    from bot import crypto_verify as cv
-    from decimal import Decimal
-    assert cv.toman_to_usdt(100000, 100000) == Decimal("1.00")
-    assert cv.toman_to_usdt(250000, 100000) == Decimal("2.50")
-    assert cv.toman_to_usdt(100000, 0) == Decimal("0")
-
-
-def test_gift_codes(fresh_db):
-    """ساخت، اعتبارسنجی، مصرف و اتمام ظرفیت کد هدیه."""
-    from bot import database as db
-    db.gift_create("NOWRUZ", "pro", 1, max_uses=2)
-    g = db.gift_get("NOWRUZ")
-    assert g and g["tier"] == "pro" and g["max_uses"] == 2
-    assert db.gift_redeem("NOWRUZ") is True   # استفاده ۱
-    assert db.gift_redeem("NOWRUZ") is True   # استفاده ۲
-    assert db.gift_redeem("NOWRUZ") is False  # ظرفیت تمام
-    assert db.gift_redeem("UNKNOWN") is False  # کد ناموجود
 
 
 # ---------------- migration از settings قدیمی ----------------

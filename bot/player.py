@@ -11,8 +11,13 @@ from pytgcalls.types import AudioQuality, MediaStream, VideoQuality
 from bot import app, call
 from bot import database as db
 from bot import logs
+from bot import panel as panel_mod
+from bot import panel_video
+from bot import playlist_page
 from bot import queue as q
+from bot import sleep_timer
 from bot import soundcloud
+from bot import ui
 from bot import youtube
 from bot.panel import (
     cover_file,
@@ -34,6 +39,7 @@ DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "/data/downloads").strip() or "/da
 
 _panel_msg: Dict[int, int] = {}
 _panel_media: Dict[int, str] = {}  # نوع رسانه فعلی پنل: anim/static/photo/text
+_panel_sig: Dict[int, str] = {}    # امضای آخرین محتوای ارسال‌شده (رفرش شرطی)
 _updater: Dict[int, asyncio.Task] = {}
 _volume: Dict[int, int] = {}
 _muted: Dict[int, bool] = {}
@@ -80,6 +86,39 @@ def set_muted(chat_id: int, val: bool) -> None:
     _muted[chat_id] = val
 
 
+# ---------------------------------------------------------------- تایمر خواب
+def sleep_left(chat_id: int):
+    """ثانیه‌ی باقی‌مانده‌ی تایمر خواب این گروه (None = خاموش)."""
+    return sleep_timer.left(chat_id)
+
+
+def sleep_start(chat_id: int, minutes: int) -> float:
+    return sleep_timer.start(chat_id, minutes)
+
+
+def sleep_cancel(chat_id: int) -> bool:
+    return sleep_timer.cancel(chat_id)
+
+
+async def _on_sleep_expire(chat_id: int) -> None:
+    """پایان تایمر خواب: پخش قطع، خروج از ویس‌چت، اطلاع در گروه."""
+    LOGGER.info("تایمر خواب سر رسید — پایان پخش (chat=%s)", chat_id)
+    try:
+        await stop(chat_id)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("stop در پایان تایمر خواب: %s", e)
+    t = ui.Text().title(ui.EMO_BELL, ui.BASE_ARROW, "تایمر خواب")
+    t.line(0, "زمان تعیین‌شده تمام شد؛ پخش پایان یافت و از ویس‌چت خارج شدم.")
+    t.italic("شب خوش.")
+    try:
+        await app.send_message(chat_id, t.text, entities=t.entities)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("پیام پایان تایمر خواب: %s", e)
+
+
+sleep_timer.set_expire_handler(_on_sleep_expire)
+
+
 def _stream(track: Track) -> MediaStream:
     # همیشه از فایل محلی پخش کن (لینک استریم یوتیوب به IP پروکسی قفل است
     # و ffmpeg از IP سرور نمی‌تواند آن را بگیرد → سکوت در کال).
@@ -122,6 +161,26 @@ async def _ensure_local_file(track: Track) -> bool:
     # (raw.Stream با SHELL که probe را دور می‌زند)؛ اینجا فقط آماده‌بودن را تأیید کن.
     if track.source == "telegram_stream":
         return bool(track.tg_chat_id and track.tg_msg_id)
+
+    # منبع «ربات جستجو»: فایل همان لحظه دانلود شده و مسیر محلی دارد.
+    # آرشیو در پس‌زمینه انجام می‌شود تا دفعه بعد از کانال دیتابیس بیاید.
+    if track.source == "searchbot":
+        if track.local_path and os.path.isfile(track.local_path):
+            if not getattr(track, "_archived", False):
+                track._archived = True
+                asyncio.create_task(_archive_searchbot(track))
+            return True
+        # فایل موقت پاک شده — دوباره از ربات جستجو بگیر
+        try:
+            from bot import searchbot
+            got = await searchbot.fetch(track.query or track.title)
+            if got and got.get("path") and os.path.isfile(got["path"]):
+                track.local_path = got["path"]
+                track.stream_url = got["path"]
+                return True
+        except Exception as e:  # noqa: BLE001
+            logs.debug("searchbot refetch: %s", e)
+        return False
 
     # منبع آرشیو: رکورد آماده در info.archive_rec است → مستقیم از کانال دانلود
     if track.source == "archive":
@@ -227,6 +286,9 @@ async def _ensure_local_file(track: Track) -> bool:
                 asyncio.create_task(channel.archive_store(
                     path, vid, query, info.get("title", track.title),
                     int(info.get("duration") or 0), track.is_video,
+                    source=track.source or "youtube",
+                    url=track.webpage_url or "",
+                    added_by=track.requester_id or 0,
                 ))
             except Exception as e:  # noqa: BLE001
                 logs.debug("archive store schedule: %s", e)
@@ -253,6 +315,34 @@ def _prune_cache() -> None:
         logs.debug("prune cache: %s", e)
 
 
+async def _archive_searchbot(track: Track) -> None:
+    """در پس‌زمینه: آهنگ گرفته‌شده از ربات جستجو را در کانال دیتابیس ثبت می‌کند.
+
+    فایل همان فایلی است که پخش می‌شود، پس **پاک نمی‌شود** — فقط آپلود می‌شود.
+    دفعه بعد همین آهنگ از کانال دیتابیس می‌آید و ربات جستجو لازم نیست.
+    """
+    try:
+        from bot import channel
+        import config
+        if not config.ARCHIVE_CHANNEL:
+            return
+        path = track.local_path
+        if not path or not os.path.isfile(path):
+            return
+        q = track.query or track.title
+        if channel.archive_lookup(query=q) or channel.archive_lookup(query=track.title):
+            return
+        await channel.publish_song(
+            app, path, title=track.title,
+            performer=getattr(track, "performer", "") or "",
+            duration=int(track.duration or 0),
+            source="searchbot", added_by=track.requester_id or 0,
+            is_video=False, key=channel._norm_key("", track.title),
+        )
+    except Exception as e:  # noqa: BLE001
+        logs.debug("archive searchbot: %s", e)
+
+
 async def _archive_soundcloud(track: Track) -> None:
     """در پس‌زمینه: آهنگ ساوندکلاد را دانلود و به کانال آرشیو می‌فرستد.
 
@@ -273,6 +363,8 @@ async def _archive_soundcloud(track: Track) -> None:
                 path, "", track.query,
                 info.get("title", track.title),
                 int(info.get("duration") or 0), False,
+                source="soundcloud", url=track.webpage_url or "",
+                added_by=track.requester_id or 0,
             )
             # فایل موقتِ آرشیو را پاک کن (پخش از استریم است، این فایل لازم نیست)
             try:
@@ -505,6 +597,9 @@ async def stop(chat_id: int) -> None:
     q.clear(chat_id)
     _cancel_updater(chat_id)
     _muted.pop(chat_id, None)
+    _panel_sig.pop(chat_id, None)
+    panel_mod.reset_menus(chat_id)
+    sleep_timer.cancel(chat_id)
     await _delete_panel(chat_id)
     try:
         await call.leave_call(chat_id)
@@ -519,6 +614,9 @@ async def end_playback(chat_id: int) -> None:
     q.end_current(chat_id)
     _cancel_updater(chat_id)
     _muted.pop(chat_id, None)
+    _panel_sig.pop(chat_id, None)
+    panel_mod.reset_menus(chat_id)
+    sleep_timer.cancel(chat_id)
     await _delete_panel(chat_id)
     try:
         await call.leave_call(chat_id)
@@ -534,11 +632,10 @@ async def _send_panel(chat_id: int, new: bool = False) -> None:
 
     # همیشه پنل قبلی این گروه را (هرجا بود) حذف کن تا چت شلوغ نشود.
     await _delete_panel(chat_id)
+    # آهنگ عوض شده → منوهای آکاردئونی باز نباید به پنل جدید منتقل شوند.
+    panel_mod.reset_menus(chat_id)
 
-    vol, muted = get_volume(chat_id), is_muted(chat_id)
-    text = panel_text(track, vol, muted)
-    ents = panel_entities(track, vol, muted)
-    kb = panel_keyboard(chat_id, track, vol, muted)
+    text, ents, kb = _render(chat_id, track)
     cover = cover_file()
     static = cover_static_file()
     try:
@@ -580,6 +677,7 @@ async def _send_panel(chat_id: int, new: bool = False) -> None:
 async def _delete_panel(chat_id: int) -> None:
     mid = _panel_msg.pop(chat_id, None)
     _panel_media.pop(chat_id, None)
+    _panel_sig.pop(chat_id, None)
     if mid:
         try:
             await app.delete_messages(chat_id, mid)
@@ -587,15 +685,52 @@ async def _delete_panel(chat_id: int) -> None:
             pass
 
 
-async def refresh_panel(chat_id: int) -> None:
+def _render(chat_id: int, track: Track):
+    """محتوای فعلی پیام پنل را می‌سازد: پنل فیلم، پنل پخش، یا صفحه‌ی لیست.
+
+    برمی‌گرداند (text, entities, keyboard).
+    """
+    vol, muted = get_volume(chat_id), is_muted(chat_id)
+
+    # فیلم پنل خودش را دارد (بدون صف، بدون پلتفرم، بدون حالت پخش)
+    if track.is_video:
+        text, ents = panel_video.content(track, vol, muted, chat_id)
+        return text, ents, panel_video.keyboard(chat_id, track, vol, muted,
+                                                sleep_left(chat_id))
+
+    if panel_mod.get_view(chat_id) == panel_mod.VIEW_PLAYLIST:
+        items = list(q.get_queue(chat_id))
+        page = playlist_page.clamp_page(panel_mod.get_view_page(chat_id), len(items))
+        # صفحه‌ی ذخیره‌شده ممکن است بعد از حذف آهنگ دیگر وجود نداشته باشد
+        if page != panel_mod.get_view_page(chat_id):
+            panel_mod.set_view(chat_id, panel_mod.VIEW_PLAYLIST, page)
+        text, ents = playlist_page.content(track, items, page)
+        return text, ents, playlist_page.keyboard(items, page)
+
+    return (
+        panel_text(track, vol, muted, chat_id),
+        panel_entities(track, vol, muted, chat_id),
+        panel_keyboard(chat_id, track, vol, muted, sleep_left(chat_id)),
+    )
+
+
+async def refresh_panel(chat_id: int, force: bool = False) -> None:
+    """پنل را به‌روز می‌کند — **فقط اگر محتوا واقعاً عوض شده باشد**.
+
+    نوار زمان هر PROGRESS_INTERVAL ثانیه رفرش می‌خورد، ولی برچسبش تنها وقتی
+    عوض می‌شود که ثانیه‌ی نمایشی تغییر کند. بدون این بررسی، تلگرام خطای
+    «message is not modified» می‌دهد و درخواست هدر می‌رود (با چند گروه همزمان،
+    ریسک FloodWait). force=True برای کلیک دستی کاربر روی «تازه‌سازی».
+    """
     track = q.now_playing(chat_id)
     mid = _panel_msg.get(chat_id)
     if track is None or mid is None:
         return
-    vol, muted = get_volume(chat_id), is_muted(chat_id)
-    text = panel_text(track, vol, muted)
-    ents = panel_entities(track, vol, muted)
-    kb = panel_keyboard(chat_id, track, vol, muted)
+    text, ents, kb = _render(chat_id, track)
+
+    sig = ui.signature(text, kb)
+    if not force and _panel_sig.get(chat_id) == sig:
+        return
 
     # آیا باید نوع کاور عوض شود؟ (پخش=متحرک، مکث=ثابت)
     anim = cover_file()
@@ -621,8 +756,9 @@ async def refresh_panel(chat_id: int) -> None:
                                            caption_entities=ents, reply_markup=kb)
         else:
             await app.edit_message_text(chat_id, mid, text, entities=ents, reply_markup=kb)
+        _panel_sig[chat_id] = sig
     except MessageNotModified:
-        pass
+        _panel_sig[chat_id] = sig
     except Exception as e:  # noqa: BLE001
         LOGGER.debug("refresh_panel: %s", e)
 

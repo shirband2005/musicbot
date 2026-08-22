@@ -3,6 +3,7 @@
 صف و آهنگ در حال پخش هر گروه در دیتابیس هم ذخیره می‌شود تا با ری‌استارت از بین نرود.
 """
 import time
+import uuid
 from collections import deque
 from dataclasses import asdict, dataclass, fields
 from typing import Deque, Dict, List, Optional
@@ -19,11 +20,15 @@ class Track:
     duration_text: str
     thumbnail: Optional[str]
     requester: str  # نام درخواست‌کننده
+    requester_id: int = 0  # شناسه‌ی عددی درخواست‌کننده (برای منشن قابل کلیک در پنل)
+    uid: str = ""  # شناسه‌ی یکتای این آیتم صف (برای callback پرش/حذف در لیست پخش)
     is_video: bool = False
     query: str = ""  # عبارت جست‌وجوی اصلی (برای دریافت رسانه/بازپخش)
     video_id: str = ""  # شناسه ویدیوی یوتیوب (کلید کش)
     local_path: str = ""  # مسیر فایل دانلودشده‌ی محلی (برای پخش پایدار در کال)
-    source: str = "youtube"  # منبع: youtube | soundcloud | telegram | telegram_stream
+    performer: str = ""  # خواننده (از ربات جستجو یا فایل تلگرام)
+    source: str = "youtube"  # youtube | soundcloud | searchbot | archive |
+                             # telegram | telegram_stream
     # برای استریم مستقیم فایل حجیم تلگرام (بدون دانلود کامل):
     tg_chat_id: int = 0  # چتی که فایل در آن است (برای دسترسی یوزربات)
     tg_msg_id: int = 0   # آی‌دی پیام حاوی فایل
@@ -55,6 +60,13 @@ class Track:
         if self.duration:
             pos = min(pos, self.duration)
         return int(pos)
+
+    def __post_init__(self) -> None:
+        # هر Track شناسه‌ی یکتا می‌گیرد تا callback لیست پخش به شماره‌ی ردیف
+        # وابسته نباشد؛ شماره‌ها با رد شدن/حذف آهنگ جابه‌جا می‌شوند و کاربر
+        # ممکن است آیتم اشتباهی را پخش/حذف کند.
+        if not self.uid:
+            self.uid = uuid.uuid4().hex[:8]
 
 
 _TRACK_FIELDS = {f.name for f in fields(Track)}
@@ -195,6 +207,49 @@ def end_current(chat_id: int) -> None:
         db.queue_clear(chat_id)
     except Exception:  # noqa: BLE001
         pass
+
+
+# ---------------------------------------------------------------- دسترسی با uid
+def find(chat_id: int, uid: str) -> Optional[Track]:
+    """آهنگ صف را با شناسه‌ی یکتا پیدا می‌کند (نه با شماره‌ی ردیف).
+
+    شماره‌ی ردیف با رد شدن یا حذف آهنگ جابه‌جا می‌شود؛ اگر callback شماره را
+    حمل کند، کاربر ممکن است آیتم اشتباهی را پخش/حذف کند.
+    """
+    if not uid:
+        return None
+    for t in get_queue(chat_id):
+        if t.uid == uid:
+            return t
+    return None
+
+
+def remove(chat_id: int, uid: str) -> Optional[Track]:
+    """آهنگ را از صف حذف می‌کند و خودش را برمی‌گرداند (None اگر نبود)."""
+    q = get_queue(chat_id)
+    for i, t in enumerate(q):
+        if t.uid == uid:
+            del q[i]
+            _persist(chat_id)
+            return t
+    return None
+
+
+def move_to_front(chat_id: int, uid: str) -> Optional[Track]:
+    """آهنگ را به ابتدای صف می‌آورد تا با «بعدی» فوراً پخش شود.
+
+    برای «پرش» در لیست پخش: خودِ پخش را عوض نمی‌کند، فقط ترتیب صف را.
+    """
+    t = remove(chat_id, uid)
+    if t is None:
+        return None
+    get_queue(chat_id).appendleft(t)
+    _persist(chat_id)
+    return t
+
+
+def queue_len(chat_id: int) -> int:
+    return len(get_queue(chat_id))
 
 
 def progress_bar(position: int, duration: int, length: int = 12) -> str:

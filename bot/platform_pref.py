@@ -1,23 +1,43 @@
-"""ترجیح پلتفرم جست‌وجو برای هر گروه (یوتیوب+ساوندکلاد / یوتیوب / ساوندکلاد)."""
+"""ترجیح روش جست‌وجوی هر گروه: دیتابیس (ربات جستجو) / یوتیوب / ساوندکلاد.
+
+سه روش (تصمیم کاربر — حالت «هر دو» حذف و «دیتابیس» جایش آمد):
+
+  · DATABASE   — از طریق ربات جستجوی خودمان (inline) در گروه جستجو.
+                 یوزربات کمکی inline query می‌زند، نتیجه را می‌گیرد، فایل را
+                 در گروه جستجو می‌فرستد و دانلود می‌کند. اگر جواب نداد،
+                 fallback به یوتیوب.
+  · YOUTUBE    — مستقیم از یوتیوب دانلود و استریم (بدون امتحان ساوندکلاد).
+  · SOUNDCLOUD — اول خودِ دستور را در ساوندکلاد جست‌وجو می‌کند؛ اگر پیدا نشد،
+                 اسم دقیق را از یوتیوب می‌گیرد و با آن اسم دوباره ساوندکلاد.
+
+هر سه روش **اول کانال دیتابیس خودمان** را چک می‌کنند؛ اگر آهنگ آنجا بود،
+بدون دانلود از تلگرام بازیابی می‌شود.
+"""
 from bot import database as db
 
 # حالت‌ها به‌ترتیب چرخش دکمه
-BOTH = "both"        # اول ساوندکلاد، اگر نبود یوتیوب
-YOUTUBE = "youtube"  # فقط یوتیوب
-SOUNDCLOUD = "soundcloud"  # فقط ساوندکلاد
+DATABASE = "database"        # ربات جستجوی خودمان (روش پیش‌فرض)
+YOUTUBE = "youtube"          # فقط یوتیوب
+SOUNDCLOUD = "soundcloud"    # ساوندکلاد (با کمک اسم یوتیوب)
 
-_ORDER = [BOTH, YOUTUBE, SOUNDCLOUD]
+# نام قدیمی که در دیتابیس گروه‌های موجود ذخیره شده است
+LEGACY_BOTH = "both"
+
+_ORDER = [DATABASE, YOUTUBE, SOUNDCLOUD]
 
 _LABEL = {
-    BOTH: "پلتفرم: یوتیوب + ساوند کلاد",
+    DATABASE: "پلتفرم: دیتابیس",
     YOUTUBE: "پلتفرم: یوتیوب",
     SOUNDCLOUD: "پلتفرم: ساوند کلاد",
 }
 
 
 def get(chat_id: int) -> str:
+    """روش جست‌وجوی این گروه. مقدار قدیمی `both` به `database` نگاشت می‌شود."""
     v = db.group_get(chat_id)["platform"]
-    return v if v in _ORDER else BOTH
+    if v == LEGACY_BOTH:
+        return DATABASE
+    return v if v in _ORDER else DATABASE
 
 
 def effective(chat_id: int) -> str:

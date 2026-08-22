@@ -86,7 +86,12 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             title       TEXT,
             duration    INTEGER DEFAULT 0,
             is_video    INTEGER DEFAULT 0,
-            added_at    REAL DEFAULT 0
+            added_at    REAL DEFAULT 0,
+            performer   TEXT DEFAULT '',    -- خواننده
+            file_size   INTEGER DEFAULT 0,  -- بایت
+            source      TEXT DEFAULT '',    -- youtube | soundcloud | forward | telegram
+            added_by    INTEGER DEFAULT 0,  -- شناسه‌ی کسی که اضافه کرد
+            url         TEXT DEFAULT ''     -- لینک صفحه‌ی منبع
         );
         -- اشتراک هر گروه
         CREATE TABLE IF NOT EXISTS subscriptions (
@@ -116,6 +121,13 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+        -- شماره کارت‌های پرداخت (چند کارت؛ مالک اضافه/حذف می‌کند)
+        CREATE TABLE IF NOT EXISTS pay_cards (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            number   TEXT NOT NULL,
+            holder   TEXT DEFAULT '',
+            added_at REAL DEFAULT 0
+        );
         -- کدهای هدیه/تخفیف (مالک می‌سازد، کاربر در خرید وارد می‌کند)
         CREATE TABLE IF NOT EXISTS gift_codes (
             code       TEXT PRIMARY KEY,
@@ -128,15 +140,40 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
-    # افزودن ستون mode به دیتابیس‌های قدیمی (اگر نبود)
-    try:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(group_settings)").fetchall()]
-        if "mode" not in cols:
-            conn.execute("ALTER TABLE group_settings ADD COLUMN mode TEXT DEFAULT 'queue'")
-            conn.commit()
-    except Exception:  # noqa: BLE001
-        pass
+    _add_columns(conn)
     _migrate_from_settings(conn)
+
+
+# ستون‌هایی که ممکن است در دیتابیس‌های قدیمی نباشند: (جدول, ستون, تعریف)
+_EXTRA_COLUMNS = [
+    ("group_settings", "mode", "TEXT DEFAULT 'queue'"),
+    # مهلت روشن ماندن بدون اشتراک (۰ = بدون مهلت). مالک از پنل مدیریت تنظیم می‌کند.
+    ("group_settings", "free_until", "REAL DEFAULT 0"),
+    # مکث اشتراک: timestamp لحظه‌ی مکث (۰ = مکث نشده). با ادامه، expires_at
+    # به اندازه‌ی مدت مکث جلو می‌رود تا روزی از کاربر سوخت نشود.
+    ("subscriptions", "paused_at", "REAL DEFAULT 0"),
+    # اطلاعات کامل‌تر آهنگ آرشیو (برای نمایش در کانال دیتابیس)
+    ("channel_songs", "performer", "TEXT DEFAULT ''"),
+    ("channel_songs", "file_size", "INTEGER DEFAULT 0"),
+    ("channel_songs", "source", "TEXT DEFAULT ''"),
+    ("channel_songs", "added_by", "INTEGER DEFAULT 0"),
+    ("channel_songs", "url", "TEXT DEFAULT ''"),
+]
+
+
+def _add_columns(conn: sqlite3.Connection) -> None:
+    """ستون‌های افزوده‌شده در نسخه‌های جدید را به دیتابیس موجود اضافه می‌کند.
+
+    هر ستون جدا try می‌شود تا خطای یک ستون، بقیه را از کار نیندازد.
+    """
+    for table, column, decl in _EXTRA_COLUMNS:
+        try:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            if column not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+                conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _migrate_from_settings(conn) -> None:
@@ -231,12 +268,22 @@ def queue_clear(chat_id: int) -> None:
 
 
 # --- آرشیو آهنگ در کانال (دیتابیس بی‌نهایت) ---
+def _col(row, name, default):
+    """خواندن ستون با پیش‌فرض — دیتابیس‌های قدیمی ممکن است ستون را نداشته باشند."""
+    try:
+        v = row[name]
+    except (IndexError, KeyError):
+        return default
+    return default if v is None else v
+
+
 def archive_get(key: str) -> Optional[dict]:
     """اطلاعات آهنگ آرشیوشده در کانال را برمی‌گرداند (اگر باشد)."""
     with _lock:
         conn = _connect()
         row = conn.execute(
-            "SELECT key, file_id, message_id, title, duration, is_video "
+            "SELECT key, file_id, message_id, title, duration, is_video, "
+            "performer, file_size, source, added_by, url, added_at "
             "FROM channel_songs WHERE key=?",
             (key,),
         ).fetchone()
@@ -249,23 +296,88 @@ def archive_get(key: str) -> Optional[dict]:
             "title": row["title"],
             "duration": row["duration"],
             "is_video": bool(row["is_video"]),
+            "performer": _col(row, "performer", ""),
+            "file_size": _col(row, "file_size", 0),
+            "source": _col(row, "source", ""),
+            "added_by": _col(row, "added_by", 0),
+            "url": _col(row, "url", ""),
+            "added_at": _col(row, "added_at", 0.0),
         }
 
 
 def archive_put(key: str, file_id: str, message_id: int, title: str,
-                duration: int, is_video: bool) -> None:
+                duration: int, is_video: bool, performer: str = "",
+                file_size: int = 0, source: str = "", added_by: int = 0,
+                url: str = "") -> None:
+    """ثبت/به‌روزرسانی آهنگ آرشیو با اطلاعات کامل."""
     import time
     with _lock:
         conn = _connect()
         conn.execute(
-            "INSERT INTO channel_songs(key, file_id, message_id, title, duration, is_video, added_at) "
-            "VALUES (?,?,?,?,?,?,?) "
+            "INSERT INTO channel_songs(key, file_id, message_id, title, duration, "
+            "is_video, added_at, performer, file_size, source, added_by, url) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(key) DO UPDATE SET file_id=excluded.file_id, "
             "message_id=excluded.message_id, title=excluded.title, "
-            "duration=excluded.duration, is_video=excluded.is_video",
-            (key, file_id, message_id, title, duration, 1 if is_video else 0, time.time()),
+            "duration=excluded.duration, is_video=excluded.is_video, "
+            "performer=excluded.performer, file_size=excluded.file_size, "
+            "source=excluded.source, added_by=excluded.added_by, url=excluded.url",
+            (key, file_id, message_id, title, duration, 1 if is_video else 0,
+             time.time(), performer, int(file_size or 0), source,
+             int(added_by or 0), url),
         )
         conn.commit()
+
+
+def archive_by_message(message_id: int) -> Optional[dict]:
+    """رکورد آهنگ بر اساس شناسه‌ی پیام کانال دیتابیس."""
+    if not message_id:
+        return None
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT key, file_id, message_id, title, duration, is_video, "
+            "performer, file_size, source, added_by, url, added_at "
+            "FROM channel_songs WHERE message_id=?",
+            (int(message_id),),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "key": row["key"],
+            "file_id": row["file_id"],
+            "message_id": row["message_id"],
+            "title": row["title"],
+            "duration": row["duration"],
+            "is_video": bool(row["is_video"]),
+            "performer": _col(row, "performer", ""),
+            "file_size": _col(row, "file_size", 0),
+            "source": _col(row, "source", ""),
+            "added_by": _col(row, "added_by", 0),
+            "url": _col(row, "url", ""),
+            "added_at": _col(row, "added_at", 0.0),
+        }
+
+
+def archive_by_short(short: str) -> Optional[dict]:
+    """رکورد آهنگ از کلید کوتاه‌شده‌ی callback_data.
+
+    اگر کلید کوتاه بود، همان کلید است؛ اگر با 'h:' شروع شود، هش کلید است و
+    باید بین رکوردها پیدا شود (تعداد آهنگ‌ها زیاد است ولی این مسیر نادر است).
+    """
+    if not short:
+        return None
+    if not short.startswith("h:"):
+        return archive_get(short)
+    import hashlib
+    target = short[2:]
+    with _lock:
+        conn = _connect()
+        rows = conn.execute("SELECT key FROM channel_songs").fetchall()
+    for r in rows:
+        if hashlib.sha1(r["key"].encode()).hexdigest()[:16] == target:
+            return archive_get(r["key"])
+    return None
 
 
 def archive_count() -> int:
@@ -280,12 +392,14 @@ def archive_delete(key: str = "", message_id: int = 0) -> Optional[dict]:
         conn = _connect()
         if message_id:
             row = conn.execute(
-                "SELECT key, title, message_id FROM channel_songs WHERE message_id=?",
+                "SELECT key, title, message_id, performer, duration, source "
+                "FROM channel_songs WHERE message_id=?",
                 (message_id,),
             ).fetchone()
         elif key:
             row = conn.execute(
-                "SELECT key, title, message_id FROM channel_songs WHERE key=?",
+                "SELECT key, title, message_id, performer, duration, source "
+                "FROM channel_songs WHERE key=?",
                 (key,),
             ).fetchone()
         else:
@@ -294,14 +408,19 @@ def archive_delete(key: str = "", message_id: int = 0) -> Optional[dict]:
             return None
         conn.execute("DELETE FROM channel_songs WHERE key=?", (row["key"],))
         conn.commit()
-        return {"key": row["key"], "title": row["title"], "message_id": row["message_id"]}
+        return {"key": row["key"], "title": row["title"],
+                "message_id": row["message_id"],
+                "performer": _col(row, "performer", ""),
+                "duration": _col(row, "duration", 0),
+                "source": _col(row, "source", "")}
 
 
 def archive_random(audio_only: bool = True) -> Optional[dict]:
     """یک آهنگ تصادفی از آرشیو کانال برمی‌گرداند (برای حالت پخش رندوم)."""
     with _lock:
         conn = _connect()
-        sql = ("SELECT key, file_id, message_id, title, duration, is_video "
+        sql = ("SELECT key, file_id, message_id, title, duration, is_video, "
+               "performer, file_size, source, added_by, url, added_at "
                "FROM channel_songs")
         if audio_only:
             sql += " WHERE is_video=0"
@@ -316,6 +435,12 @@ def archive_random(audio_only: bool = True) -> Optional[dict]:
             "title": row["title"],
             "duration": row["duration"],
             "is_video": bool(row["is_video"]),
+            "performer": _col(row, "performer", ""),
+            "file_size": _col(row, "file_size", 0),
+            "source": _col(row, "source", ""),
+            "added_by": _col(row, "added_by", 0),
+            "url": _col(row, "url", ""),
+            "added_at": _col(row, "added_at", 0.0),
         }
 
 
@@ -465,18 +590,21 @@ def group_get(chat_id: int) -> dict:
     with _lock:
         conn = _connect()
         row = conn.execute(
-            "SELECT enabled, lock, platform, mode FROM group_settings WHERE chat_id=?",
+            "SELECT enabled, lock, platform, mode, free_until "
+            "FROM group_settings WHERE chat_id=?",
             (chat_id,),
         ).fetchone()
         if not row:
-            return {"enabled": 0, "lock": "none", "platform": "both", "mode": "queue"}
+            return {"enabled": 0, "lock": "none", "platform": "both",
+                    "mode": "queue", "free_until": 0.0}
         return {"enabled": row["enabled"], "lock": row["lock"],
-                "platform": row["platform"], "mode": row["mode"] or "queue"}
+                "platform": row["platform"], "mode": row["mode"] or "queue",
+                "free_until": row["free_until"] or 0.0}
 
 
 def group_set(chat_id: int, **fields) -> None:
-    """به‌روزرسانی یک یا چند فیلد تنظیماتِ گروه (enabled/lock/platform/mode)."""
-    allowed = {"enabled", "lock", "platform", "mode"}
+    """به‌روزرسانی یک یا چند فیلد تنظیماتِ گروه (enabled/lock/platform/mode/free_until)."""
+    allowed = {"enabled", "lock", "platform", "mode", "free_until"}
     fields = {k: v for k, v in fields.items() if k in allowed}
     if not fields:
         return
@@ -518,8 +646,8 @@ def sub_get(chat_id: int) -> Optional[dict]:
     with _lock:
         conn = _connect()
         row = conn.execute(
-            "SELECT chat_id, tier, expires_at, buyer_id, started_at, last_notified "
-            "FROM subscriptions WHERE chat_id=?", (chat_id,),
+            "SELECT chat_id, tier, expires_at, buyer_id, started_at, last_notified, "
+            "paused_at FROM subscriptions WHERE chat_id=?", (chat_id,),
         ).fetchone()
         if not row:
             return None
@@ -527,7 +655,8 @@ def sub_get(chat_id: int) -> Optional[dict]:
 
 
 def sub_set(chat_id: int, **fields) -> None:
-    allowed = {"tier", "expires_at", "buyer_id", "started_at", "last_notified"}
+    allowed = {"tier", "expires_at", "buyer_id", "started_at", "last_notified",
+               "paused_at"}
     fields = {k: v for k, v in fields.items() if k in allowed}
     if not fields:
         return
@@ -640,6 +769,38 @@ def pay_set(key: str, value: str) -> None:
             (key, str(value)),
         )
         conn.commit()
+
+
+# --- شماره کارت‌های پرداخت (چند کارت) ---
+def cards_all() -> List[dict]:
+    """همه‌ی کارت‌ها به‌ترتیب افزودن."""
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT id, number, holder FROM pay_cards ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def card_add(number: str, holder: str = "") -> int:
+    """کارت جدید ثبت می‌کند و id آن را برمی‌گرداند."""
+    import time
+    with _lock:
+        conn = _connect()
+        cur = conn.execute(
+            "INSERT INTO pay_cards(number, holder, added_at) VALUES (?,?,?)",
+            (number.strip(), holder.strip(), time.time()),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+
+
+def card_delete(card_id: int) -> bool:
+    with _lock:
+        conn = _connect()
+        cur = conn.execute("DELETE FROM pay_cards WHERE id=?", (card_id,))
+        conn.commit()
+        return cur.rowcount > 0
 
 
 # --- کدهای هدیه ---

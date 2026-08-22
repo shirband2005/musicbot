@@ -108,10 +108,14 @@ async def guard_message(client: Client, message: Message) -> bool:
     is_private = message.chat.type.name == "PRIVATE"
     if await is_allowed(client, message.chat.id, user.id, is_private):
         return True
-    # کاربر مجاز نیست → پیام «شما دسترسی ندارید» + دکمه پشتیبانی
+    # کاربر مجاز نیست → علت دقیق + راه‌حل (نه یک پیام کلی)
     try:
+        from bot import messages as msg
         url = await resolve_support_url(client)
-        await message.reply_text(DENY_USER, reply_markup=support_kb(url))
+        payload = msg.pv_denied(url) if is_private else msg.not_admin(url)
+        text, ents, kb = payload
+        await message.reply_text(text, entities=ents,
+                                 reply_markup=kb if kb.inline_keyboard else None)
     except Exception:  # noqa: BLE001
         pass
     return False

@@ -1,136 +1,154 @@
-"""پنل «مدیریت پلیر» — فقط برای مالک. جدا از پنل پخش.
+"""پنل «مدیریت پلیر» — فقط برای مالک، داخل گروه.
 
-با دستور «مدیریت پلیر» در هر گروه باز می‌شود و تنظیماتِ همان گروه را نشان/تغییر می‌دهد:
-  - روشن/خاموش کردن کل پلیر برای گروه
-  - قفل پلتفرم: هر دو / فقط یوتیوب / فقط ساوندکلاد
+با دستور «مدیریت پلیر» در گروه باز می‌شود و تنظیمات همان گروه را نشان می‌دهد:
+  · روشن/خاموش کردن پلیر برای گروه (فعال رنگی، غیرفعال بی‌رنگ)
+  · قفل پلتفرم (آکاردئونی، مثل پنل پخش)
+  · میان‌بر مدیریت اشتراک همان گروه
 
-دستورهای متنی هم پشتیبانی می‌شوند (طبق خواستهٔ کاربر):
-  موزیک پلیر روشن / خاموش
-  موزیک پلیر یوتیوب روشن / موزیک پلیر ساوندکلاد روشن / موزیک پلیر هردو
+تغییرها نسبت به نسخه‌ی قبلی:
+  · دکمه‌ی «انتخاب پلتفرم» که فقط `noop` بود و کاری نمی‌کرد، حذف شد
+  · قرمزِ «این حالت نیست» حذف شد؛ فقط حالت فعال رنگ دارد
+  · اسم گروه و وضعیت اشتراک اضافه شد (مالک با چند گروه گم نمی‌شود)
+
+دستورهای متنی سریع هم حفظ شده‌اند.
+الگوی callback: `mp|<action>|<chat_id>`
 """
+from __future__ import annotations
+
 import logging
 
-from pyrogram import Client, enums, filters
-from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from pyrogram import Client, filters
+from pyrogram.types import CallbackQuery, Message
 
 from bot import group_config as gc
+from bot import subscription as sub
+from bot import ui
 from bot.auth import OWNER_ID
 from bot.facmd import fa_command
 
 LOGGER = logging.getLogger("musicbot.adminpanel")
 
-_GREEN = enums.ButtonStyle.SUCCESS
-_RED = enums.ButtonStyle.DANGER
-_BLUE = enums.ButtonStyle.PRIMARY
+# منوی قفل پلتفرم باز است؟ chat_id → bool
+_plat_open: dict = {}
 
-ON, OFF = "🟢", "🔴"
+_LOCK_LABEL = {
+    gc.LOCK_NONE: "آزاد",
+    gc.LOCK_YOUTUBE: "یوتیوب",
+    gc.LOCK_SOUNDCLOUD: "ساوندکلاد",
+}
+_LOCK_ICON = {
+    gc.LOCK_NONE: ui.EMO_DATABASE,
+    gc.LOCK_YOUTUBE: ui.EMO_YOUTUBE,
+    gc.LOCK_SOUNDCLOUD: ui.EMO_SOUNDCLOUD,
+}
+_LOCK_ORDER = (gc.LOCK_NONE, gc.LOCK_YOUTUBE, gc.LOCK_SOUNDCLOUD)
 
 
 def _is_owner(message: Message) -> bool:
     return bool(message.from_user) and message.from_user.id == OWNER_ID
 
 
-def _panel(chat_id: int):
+def panel(chat_id: int, group_name: str = ""):
+    """متن + کیبورد پنل مدیریت پلیر. برمی‌گرداند (text, entities, kb)."""
     enabled = gc.is_enabled(chat_id)
     lock = gc.get_lock(chat_id)
+    menu_open = _plat_open.get(chat_id, False)
 
-    text = (
-        "🎛 **پنل مدیریت پلیر**\n\n"
-        f"وضعیت پلیر : {'🟢 روشن' if enabled else '🔴 خاموش'}\n"
-        f"پلتفرم گروه : {_lock_label(lock)}"
-    )
+    t = ui.Text().title(ui.EMO_GEAR, ui.BASE_ARROW, "مدیریت پلیر")
+    if group_name:
+        t.field(0, "گروه", ui.trunc(group_name, 30))
+    t.field(1 if group_name else 0, "وضعیت پلیر", "روشن" if enabled else "خاموش")
+    t.field(2 if group_name else 1, "پلتفرم مجاز",
+            _LOCK_LABEL[lock] + ("" if lock == gc.LOCK_NONE else " (قفل)"))
+    t.field(3 if group_name else 2, "اشتراک", ui.fa(sub.status_text(chat_id)))
 
-    def cb(a):
+    def cb(a: str) -> str:
         return f"mp|{a}|{chat_id}"
 
-    # روشن/خاموش: حالت فعلی سبز، دیگری قرمز
-    on_style = _GREEN if enabled else _RED
-    off_style = _RED if enabled else _GREEN
+    rows = [[
+        ui.btn("روشن", cb("on"), ui.GREEN if enabled else ui.PLAIN, ui.EMO_PLAY),
+        ui.btn("خاموش", cb("off"), ui.RED if not enabled else ui.PLAIN,
+               ui.EMO_STOP),
+    ]]
 
-    # پلتفرم: حالت فعلی سبز، دو تای دیگر قرمز
-    sc_style = _GREEN if lock == gc.LOCK_SOUNDCLOUD else _RED
-    yt_style = _GREEN if lock == gc.LOCK_YOUTUBE else _RED
-    both_style = _GREEN if lock == gc.LOCK_NONE else _RED
+    if menu_open:
+        rows.append([ui.btn(f"پلتفرم مجاز: {_LOCK_LABEL[lock]} ▾",
+                            cb("plat_close"), ui.BLUE, _LOCK_ICON[lock])])
+        rows.append([ui.btn(_LOCK_LABEL[lk], cb(f"lock_{lk}"),
+                            ui.GREEN if lk == lock else ui.PLAIN, _LOCK_ICON[lk])
+                     for lk in _LOCK_ORDER])
+    else:
+        rows.append([ui.btn(f"پلتفرم مجاز: {_LOCK_LABEL[lock]}",
+                            cb("plat_open"), ui.PLAIN, _LOCK_ICON[lock])])
 
-    rows = [
-        [
-            InlineKeyboardButton("روشن", callback_data=cb("on"), style=on_style),
-            InlineKeyboardButton("خاموش", callback_data=cb("off"), style=off_style),
-        ],
-        # دکمه نمایشی (آبی) — کاری انجام نمی‌دهد
-        [InlineKeyboardButton("انتخاب پلتفرم", callback_data=cb("noop"), style=_BLUE)],
-        [
-            InlineKeyboardButton("ساوندکلاد", callback_data=cb("lock_sc"), style=sc_style),
-            InlineKeyboardButton("یوتیوب", callback_data=cb("lock_yt"), style=yt_style),
-        ],
-        [InlineKeyboardButton("یوتیوب + ساوندکلاد", callback_data=cb("lock_none"), style=both_style)],
-        [InlineKeyboardButton("بستن پنل", callback_data=cb("close"), style=_RED)],
-    ]
-    return text, InlineKeyboardMarkup(rows)
-
-
-def _lock_label(lock: str) -> str:
-    return {
-        gc.LOCK_NONE: "یوتیوب + ساوندکلاد (قابل تغییر در پنل پخش)",
-        gc.LOCK_YOUTUBE: "فقط یوتیوب (قفل‌شده)",
-        gc.LOCK_SOUNDCLOUD: "فقط ساوندکلاد (قفل‌شده)",
-    }.get(lock, lock)
+    rows.append([ui.btn("مدیریت اشتراک این گروه", cb("sub"), ui.BLUE,
+                        ui.EMO_LIST)])
+    rows.append([ui.btn("بستن پنل", cb("close"), ui.RED, ui.EMO_CLOSE)])
+    return t.text, t.entities, ui.kb(rows)
 
 
 # ---------- دستور اصلی: «مدیریت پلیر» ----------
 @Client.on_message(fa_command(["مدیریت پلیر", "پنل مدیریت پلیر"]))
 async def admin_panel_cmd(client: Client, message: Message):
     if not _is_owner(message):
-        return  # فقط مالک — بی‌صدا نادیده بگیر
+        return                                  # فقط مالک — بی‌صدا
     if message.chat.type.name == "PRIVATE":
-        await message.reply_text("این پنل باید داخل گروه باز شود تا تنظیمات همان گروه را ذخیره کند.")
+        t = ui.Text().title(ui.EMO_GEAR, ui.BASE_ARROW, "پنل مدیریت پلیر")
+        t.why("این پنل تنظیمات یک گروه مشخص را ذخیره می‌کند.")
+        t.how("داخل همان گروه بنویس «مدیریت پلیر».")
+        await message.reply_text(t.text, entities=t.entities)
         return
-    text, kb = _panel(message.chat.id)
-    await message.reply_text(text, reply_markup=kb)
+    _plat_open.pop(message.chat.id, None)
+    text, ents, kb = panel(message.chat.id, message.chat.title or "")
+    await message.reply_text(text, entities=ents, reply_markup=kb)
 
 
 # ---------- دستورهای متنی سریع ----------
+async def _quick(message: Message, enabled: bool, lock: str | None,
+                 note: str) -> None:
+    gc.set_enabled(message.chat.id, enabled)
+    if lock is not None:
+        gc.set_lock(message.chat.id, lock)
+    t = ui.Text().title(ui.EMO_GEAR, ui.BASE_ARROW, note)
+    t.field(0, "وضعیت پلیر", "روشن" if enabled else "خاموش")
+    t.field(1, "پلتفرم مجاز", _LOCK_LABEL[gc.get_lock(message.chat.id)])
+    await message.reply_text(t.text, entities=t.entities)
+
+
 @Client.on_message(fa_command(["موزیک پلیر روشن"]))
 async def mp_on(client: Client, message: Message):
     if not _is_owner(message) or message.chat.type.name == "PRIVATE":
         return
-    gc.set_enabled(message.chat.id, True)
-    await message.reply_text("🟢 موزیک‌پلیر برای این گروه **روشن** شد.")
+    await _quick(message, True, None, "پلیر روشن شد")
 
 
 @Client.on_message(fa_command(["موزیک پلیر خاموش"]))
 async def mp_off(client: Client, message: Message):
     if not _is_owner(message) or message.chat.type.name == "PRIVATE":
         return
-    gc.set_enabled(message.chat.id, False)
-    await message.reply_text("🔴 موزیک‌پلیر برای این گروه **خاموش** شد.")
+    await _quick(message, False, None, "پلیر خاموش شد")
 
 
 @Client.on_message(fa_command(["موزیک پلیر یوتیوب روشن", "موزیک پلیر فقط یوتیوب"]))
 async def mp_yt(client: Client, message: Message):
     if not _is_owner(message) or message.chat.type.name == "PRIVATE":
         return
-    gc.set_enabled(message.chat.id, True)
-    gc.set_lock(message.chat.id, gc.LOCK_YOUTUBE)
-    await message.reply_text("🟢 روشن شد. پلتفرم گروه: **فقط یوتیوب** (دکمه پلتفرم در پنل حذف شد).")
+    await _quick(message, True, gc.LOCK_YOUTUBE, "پلتفرم قفل شد: یوتیوب")
 
 
-@Client.on_message(fa_command(["موزیک پلیر ساوندکلاد روشن", "موزیک پلیر فقط ساوندکلاد"]))
+@Client.on_message(fa_command(["موزیک پلیر ساوندکلاد روشن",
+                              "موزیک پلیر فقط ساوندکلاد"]))
 async def mp_sc(client: Client, message: Message):
     if not _is_owner(message) or message.chat.type.name == "PRIVATE":
         return
-    gc.set_enabled(message.chat.id, True)
-    gc.set_lock(message.chat.id, gc.LOCK_SOUNDCLOUD)
-    await message.reply_text("🟢 روشن شد. پلتفرم گروه: **فقط ساوندکلاد** (دکمه پلتفرم در پنل حذف شد).")
+    await _quick(message, True, gc.LOCK_SOUNDCLOUD, "پلتفرم قفل شد: ساوندکلاد")
 
 
 @Client.on_message(fa_command(["موزیک پلیر هردو", "موزیک پلیر هر دو"]))
 async def mp_both(client: Client, message: Message):
     if not _is_owner(message) or message.chat.type.name == "PRIVATE":
         return
-    gc.set_enabled(message.chat.id, True)
-    gc.set_lock(message.chat.id, gc.LOCK_NONE)
-    await message.reply_text("🟢 روشن شد. پلتفرم گروه: **یوتیوب + ساوندکلاد** (قابل تغییر در پنل پخش).")
+    await _quick(message, True, gc.LOCK_NONE, "قفل پلتفرم برداشته شد")
 
 
 # ---------- callback پنل مدیریت ----------
@@ -139,17 +157,16 @@ async def admin_panel_cb(client: Client, cq: CallbackQuery):
     if not cq.from_user or cq.from_user.id != OWNER_ID:
         await cq.answer("فقط مالک ربات به این پنل دسترسی دارد.", show_alert=True)
         return
+    parts = str(cq.data or "").split("|")
+    action = parts[1] if len(parts) > 1 else ""
     try:
-        _, action, chat_id_s = cq.data.split("|", 2)
-        chat_id = int(chat_id_s)
-    except (ValueError, IndexError):
+        chat_id = int(parts[2])
+    except (IndexError, ValueError):
         await cq.answer("داده نامعتبر", show_alert=True)
         return
 
-    if action == "noop":
-        await cq.answer()
-        return
     if action == "close":
+        _plat_open.pop(chat_id, None)
         try:
             await cq.message.delete()
         except Exception:  # noqa: BLE001
@@ -157,24 +174,44 @@ async def admin_panel_cb(client: Client, cq: CallbackQuery):
         await cq.answer("بسته شد")
         return
 
+    toast = ""
     if action == "on":
         gc.set_enabled(chat_id, True)
-        await cq.answer("🟢 روشن شد")
+        toast = "پلیر روشن شد"
     elif action == "off":
         gc.set_enabled(chat_id, False)
-        await cq.answer("🔴 خاموش شد")
-    elif action == "lock_none":
-        gc.set_lock(chat_id, gc.LOCK_NONE)
-        await cq.answer("پلتفرم: هر دو")
-    elif action == "lock_yt":
-        gc.set_lock(chat_id, gc.LOCK_YOUTUBE)
-        await cq.answer("پلتفرم: فقط یوتیوب")
-    elif action == "lock_sc":
-        gc.set_lock(chat_id, gc.LOCK_SOUNDCLOUD)
-        await cq.answer("پلتفرم: فقط ساوندکلاد")
+        toast = "پلیر خاموش شد"
+    elif action == "plat_open":
+        _plat_open[chat_id] = True
+    elif action == "plat_close":
+        _plat_open.pop(chat_id, None)
+    elif action.startswith("lock_"):
+        lock = action[5:]
+        if lock in (gc.LOCK_NONE, gc.LOCK_YOUTUBE, gc.LOCK_SOUNDCLOUD):
+            gc.set_lock(chat_id, lock)
+            _plat_open.pop(chat_id, None)
+            toast = f"پلتفرم: {_LOCK_LABEL[lock]}"
+    elif action == "sub":
+        # میان‌بر: وضعیت اشتراک همین گروه را در همین پنل نشان بده
+        t = ui.Text().title(ui.EMO_LIST, ui.BASE_ARROW, "اشتراک این گروه")
+        t.field(0, "وضعیت", ui.fa(sub.status_text(chat_id)))
+        t.field(1, "شناسه گروه", code=str(chat_id))
+        t.add("\n")
+        t.italic("برای تغییر روز/مکث/لغو، در پیوی ربات «مدیریت» را بزن.")
+        kb = ui.kb([[ui.btn("بازگشت", f"mp|back|{chat_id}", ui.BLUE,
+                            ui.EMO_BACK)]])
+        try:
+            await cq.message.edit_text(t.text, entities=t.entities,
+                                       reply_markup=kb)
+        except Exception:  # noqa: BLE001
+            pass
+        await cq.answer()
+        return
 
-    text, kb = _panel(chat_id)
+    chat_name = cq.message.chat.title if cq.message and cq.message.chat else ""
+    text, ents, kb = panel(chat_id, chat_name or "")
     try:
-        await cq.message.edit_text(text, reply_markup=kb)
-    except Exception:  # noqa: BLE001
-        pass
+        await cq.message.edit_text(text, entities=ents, reply_markup=kb)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("admin panel edit: %s", e)
+    await cq.answer(toast)

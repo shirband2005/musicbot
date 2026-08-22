@@ -126,12 +126,9 @@ async def main():
         from bot import channel
         from bot import database as _db
         n_chats = len(_db.get_chats())
-        await channel.log(
-            f"🟢 **ربات روشن شد**\n"
-            f"• ربات: @{me.username}\n"
-            f"• گروه‌های ثبت‌شده: {n_chats}\n"
-            f"• آهنگ‌های آرشیو: {_db.archive_count()}"
-        )
+        from bot import channel_ui as cui
+        await channel.log(*cui.bot_started(me.username or "", n_chats,
+                                          _db.archive_count()))
         # بکاپ فقط شبانه ساعت ۱۲ تهران فرستاده می‌شود (نه در هر بوت)
         asyncio.create_task(channel.nightly_backup_loop())
         # زمان‌بند بررسی انقضای اشتراک‌ها (هر ساعت)
@@ -146,7 +143,8 @@ async def main():
     logs.info("در حال خاموش شدن...")
     try:
         from bot import channel
-        await channel.log("🔴 **ربات خاموش شد**")
+        from bot import channel_ui as cui
+        await channel.log(*cui.bot_stopped())
     except Exception:  # noqa: BLE001
         pass
     await app.stop()
