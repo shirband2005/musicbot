@@ -111,15 +111,21 @@ async def search(query: str, want_video: bool = False) -> list:
     for i, r in enumerate(getattr(res, "results", []) or []):
         raw_title = getattr(r, "title", "") or ""
         desc = getattr(r, "description", "") or ""
-        title = _clean_title(raw_title)
-        if not title:
+        name = _clean_title(raw_title)
+        if not name:
             continue
-        name, performer = _split_artist(title)
+        # ساختار واقعی نتایج (با تست زنده تأیید شد):
+        #   title       = نام آهنگ            («Gerye Kon Baram»)
+        #   description = نام خواننده         («Ali Navab»)
+        # مدت در نتیجه‌ی inline نیست؛ از خودِ فایل پس از ارسال خوانده می‌شود.
+        performer = _clean_title(desc)
+        if not performer:
+            name, performer = _split_artist(name)
         out.append({
             "index": i,
-            "title": title,
+            "title": name,
             "name": name,
-            "performer": performer or _clean_title(desc),
+            "performer": performer,
             "duration": _parse_duration(desc) or _parse_duration(raw_title),
             "raw": raw_title,
             "query_id": getattr(res, "query_id", None),
@@ -206,10 +212,17 @@ async def fetch(query: str, pick: int = 0) -> dict | None:
 
 
 async def _resolve_message(client, sent):
-    """`send_inline_bot_result` بسته به نسخه، پیام یا آبجکت آپدیت برمی‌گرداند."""
+    """پیام حاوی فایل را برمی‌گرداند.
+
+    در تست زنده `send_inline_bot_result` یک `Message` برگرداند، ولی رسانه‌اش
+    ممکن است لحظه‌ای بعد برسد؛ پس اگر فایل نبود با message_id چند بار retry
+    می‌کنیم. نسخه‌های دیگر ممکن است آبجکت آپدیت برگردانند.
+    """
     if sent is None:
         return None
-    if hasattr(sent, "audio") or hasattr(sent, "document"):
+    # اگر همین حالا فایل دارد، تمام
+    if getattr(sent, "audio", None) or getattr(sent, "voice", None) \
+            or getattr(sent, "document", None):
         return sent
     mid = getattr(sent, "id", None) or getattr(sent, "message_id", None)
     updates = getattr(sent, "updates", None)

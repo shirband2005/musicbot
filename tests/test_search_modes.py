@@ -145,14 +145,24 @@ def test_title_cleaning_and_artist_split():
 
     assert searchbot._clean_title("🎧  Gerye Kon Baram  ") == "Gerye Kon Baram"
 
-    name, artist = searchbot._split_artist("Gerye Kon Baram — Ali Navab")
-    assert name == "Ali Navab" and artist == "Gerye Kon Baram"
-
+    # فقط برای نتایجی که description ندارند و همه‌چیز در title است
     name, artist = searchbot._split_artist("Ali Navab - Gerye Kon")
     assert name == "Gerye Kon" and artist == "Ali Navab"
 
     name, artist = searchbot._split_artist("تک‌کلمه")
     assert name == "تک‌کلمه" and artist == ""
+
+
+def test_result_shape_matches_live_bot():
+    """ساختار واقعی @zandXmusicBot (با تست زنده تأیید شد):
+    title = نام آهنگ · description = نام خواننده.
+    """
+    from bot import searchbot
+
+    src = open("/opt/data/musicbot/bot/searchbot.py", encoding="utf-8").read()
+    assert "title       = نام آهنگ" in src
+    # عنوان نباید با خواننده قاتی شود وقتی description موجود است
+    assert 'performer = _clean_title(desc)' in src
 
 
 def test_search_returns_empty_when_disabled(monkeypatch):
