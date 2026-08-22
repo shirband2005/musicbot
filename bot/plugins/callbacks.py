@@ -5,7 +5,7 @@
     p|playpause | p|stop
     p|prev | p|skip
     p|vol_up | p|vol_down | p|mute
-    p|playlist                صفحه‌ی لیست پخش (فاز ۳)
+    p|playlist                صفحه‌ی لیست پخش (نمای دیگر همان پیام)
     p|mode_open | p|mode_close | p|mode_set|<queue|repeat|random>
     p|sleep_open | p|sleep_set|<minutes> | p|sleep_off
     p|plat_open | p|plat_close | p|plat_set|<both|youtube|soundcloud>
@@ -302,17 +302,12 @@ async def panel_cb(client: Client, cq: CallbackQuery):
             await cq.answer("آهنگ قبلی" if prev else "قبلی‌ای وجود ندارد")
         return
 
-    # ================= لیست پخش (صفحه‌ی کامل در فاز ۳) =================
+    # ================= لیست پخش (صفحه‌ی جدا در همان پیام) =================
     if action == "playlist":
-        items = list(q.get_queue(chat_id))
-        if not items:
-            await cq.answer("صف بعدی خالی است.", show_alert=True)
-            return
-        lines = [f"{ui.fa(i)}. {ui.trunc(t.title, 30)}"
-                 for i, t in enumerate(items[:5], 1)]
-        if len(items) > 5:
-            lines.append(f"… و {ui.fa(len(items) - 5)} آهنگ دیگر")
-        await cq.answer("\n".join(lines)[:200], show_alert=True)
+        panel_mod.set_menu(chat_id, None)     # منوی باز نباید زیر لیست بماند
+        panel_mod.set_view(chat_id, panel_mod.VIEW_PLAYLIST, 1)
+        await player.refresh_panel(chat_id, force=True)
+        await cq.answer()
         return
 
     # ================= دریافت رسانه =================
@@ -380,3 +375,78 @@ async def _send_media(client: Client, chat_id: int, track) -> None:
                 await client.send_message(chat_id, t.text, entities=t.entities)
         except Exception:  # noqa: BLE001
             pass
+
+
+# ==================================================================
+#                    صفحه‌ی لیست پخش: `q|*`
+# ==================================================================
+@Client.on_callback_query(filters.regex(r"^q\|"))
+async def playlist_cb(client: Client, cq: CallbackQuery):
+    if not await auth.guard_callback(client, cq):
+        return
+    if not cq.message or not cq.message.chat:
+        await cq.answer()
+        return
+
+    chat_id = int(cq.message.chat.id or 0)
+    parts = str(cq.data or "").split("|")
+    action = parts[1] if len(parts) > 1 else ""
+    arg = parts[2] if len(parts) > 2 else None
+    if not chat_id:
+        await cq.answer()
+        return
+
+    if action == "noop":                       # شمارنده‌ی صفحه (برچسب، نه دکمه)
+        await cq.answer()
+        return
+
+    if q.now_playing(chat_id) is None:
+        await cq.answer("چیزی در حال پخش نیست.", show_alert=True)
+        return
+
+    # --- بازگشت به پنل پخش ---
+    if action == "back":
+        panel_mod.set_view(chat_id, panel_mod.VIEW_PANEL)
+        await player.refresh_panel(chat_id, force=True)
+        await cq.answer()
+        return
+
+    # --- تغییر صفحه ---
+    if action == "page":
+        try:
+            page = int(arg or 1)
+        except ValueError:
+            page = 1
+        panel_mod.set_view(chat_id, panel_mod.VIEW_PLAYLIST, page)
+        await player.refresh_panel(chat_id, force=True)
+        await cq.answer()
+        return
+
+    # --- پخش فوری یک آهنگ از صف ---
+    if action == "jump":
+        track = q.find(chat_id, arg or "")
+        if track is None:
+            # آهنگ در این فاصله پخش یا حذف شده — لیست را تازه کن
+            await player.refresh_panel(chat_id, force=True)
+            await cq.answer("این آهنگ دیگر در صف نیست.", show_alert=True)
+            return
+        q.move_to_front(chat_id, track.uid)
+        nxt = await player.skip(chat_id)
+        panel_mod.set_view(chat_id, panel_mod.VIEW_PANEL)
+        await cq.answer(f"پخش: {ui.trunc(track.title, 28)}"
+                        if nxt else "پخش نشد")
+        return
+
+    # --- حذف از صف ---
+    if action == "del":
+        track = q.remove(chat_id, arg or "")
+        if track is None:
+            await player.refresh_panel(chat_id, force=True)
+            await cq.answer("این آهنگ دیگر در صف نیست.", show_alert=True)
+            return
+        # اگر آخرین آهنگِ صفحه‌ی جاری حذف شد، refresh خودش صفحه را عقب می‌برد
+        await player.refresh_panel(chat_id, force=True)
+        await cq.answer(f"حذف شد: {ui.trunc(track.title, 26)}")
+        return
+
+    await cq.answer()

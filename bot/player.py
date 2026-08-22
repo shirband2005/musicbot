@@ -12,6 +12,7 @@ from bot import app, call
 from bot import database as db
 from bot import logs
 from bot import panel as panel_mod
+from bot import playlist_page
 from bot import queue as q
 from bot import sleep_timer
 from bot import soundcloud
@@ -633,6 +634,28 @@ async def _delete_panel(chat_id: int) -> None:
             pass
 
 
+def _render(chat_id: int, track: Track):
+    """محتوای فعلی پیام پنل را می‌سازد: پنل پخش یا صفحه‌ی لیست پخش.
+
+    برمی‌گرداند (text, entities, keyboard).
+    """
+    if panel_mod.get_view(chat_id) == panel_mod.VIEW_PLAYLIST:
+        items = list(q.get_queue(chat_id))
+        page = playlist_page.clamp_page(panel_mod.get_view_page(chat_id), len(items))
+        # صفحه‌ی ذخیره‌شده ممکن است بعد از حذف آهنگ دیگر وجود نداشته باشد
+        if page != panel_mod.get_view_page(chat_id):
+            panel_mod.set_view(chat_id, panel_mod.VIEW_PLAYLIST, page)
+        text, ents = playlist_page.content(track, items, page)
+        return text, ents, playlist_page.keyboard(items, page)
+
+    vol, muted = get_volume(chat_id), is_muted(chat_id)
+    return (
+        panel_text(track, vol, muted, chat_id),
+        panel_entities(track, vol, muted, chat_id),
+        panel_keyboard(chat_id, track, vol, muted, sleep_left(chat_id)),
+    )
+
+
 async def refresh_panel(chat_id: int, force: bool = False) -> None:
     """پنل را به‌روز می‌کند — **فقط اگر محتوا واقعاً عوض شده باشد**.
 
@@ -645,10 +668,7 @@ async def refresh_panel(chat_id: int, force: bool = False) -> None:
     mid = _panel_msg.get(chat_id)
     if track is None or mid is None:
         return
-    vol, muted = get_volume(chat_id), is_muted(chat_id)
-    text = panel_text(track, vol, muted, chat_id)
-    ents = panel_entities(track, vol, muted, chat_id)
-    kb = panel_keyboard(chat_id, track, vol, muted, sleep_left(chat_id))
+    text, ents, kb = _render(chat_id, track)
 
     sig = ui.signature(text, kb)
     if not force and _panel_sig.get(chat_id) == sig:

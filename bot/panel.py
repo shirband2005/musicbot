@@ -111,6 +111,35 @@ def toggle_menu(chat_id: int, menu: str) -> Optional[str]:
 def reset_menus(chat_id: int) -> None:
     """با تعویض آهنگ یا بستن پنل، منوهای باز باید پاک شوند."""
     set_menu(chat_id, None)
+    set_view(chat_id, VIEW_PANEL, 1)
+
+
+# ---------------------------------------------------------------- نمای پنل
+# پیام پنل دو نما دارد: پنل پخش، یا صفحه‌ی لیست پخش (در همان پیام).
+# نگه‌داشتن این وضعیت لازم است چون حلقه‌ی رفرش نوار زمان هر چند ثانیه پنل را
+# بازسازی می‌کند و اگر نما را نداند، صفحه‌ی لیست را وسط کار می‌بندد.
+VIEW_PANEL = "panel"
+VIEW_PLAYLIST = "playlist"
+
+_view: Dict[int, str] = {}
+_view_page: Dict[int, int] = {}
+
+
+def get_view(chat_id: int) -> str:
+    return _view.get(chat_id, VIEW_PANEL)
+
+
+def get_view_page(chat_id: int) -> int:
+    return _view_page.get(chat_id, 1)
+
+
+def set_view(chat_id: int, view: str, page: int = 1) -> None:
+    if view == VIEW_PANEL:
+        _view.pop(chat_id, None)
+        _view_page.pop(chat_id, None)
+    else:
+        _view[chat_id] = view
+        _view_page[chat_id] = max(1, int(page))
 
 
 # ---------------------------------------------------------------- برچسب‌ها

@@ -207,6 +207,49 @@ def end_current(chat_id: int) -> None:
         pass
 
 
+# ---------------------------------------------------------------- دسترسی با uid
+def find(chat_id: int, uid: str) -> Optional[Track]:
+    """آهنگ صف را با شناسه‌ی یکتا پیدا می‌کند (نه با شماره‌ی ردیف).
+
+    شماره‌ی ردیف با رد شدن یا حذف آهنگ جابه‌جا می‌شود؛ اگر callback شماره را
+    حمل کند، کاربر ممکن است آیتم اشتباهی را پخش/حذف کند.
+    """
+    if not uid:
+        return None
+    for t in get_queue(chat_id):
+        if t.uid == uid:
+            return t
+    return None
+
+
+def remove(chat_id: int, uid: str) -> Optional[Track]:
+    """آهنگ را از صف حذف می‌کند و خودش را برمی‌گرداند (None اگر نبود)."""
+    q = get_queue(chat_id)
+    for i, t in enumerate(q):
+        if t.uid == uid:
+            del q[i]
+            _persist(chat_id)
+            return t
+    return None
+
+
+def move_to_front(chat_id: int, uid: str) -> Optional[Track]:
+    """آهنگ را به ابتدای صف می‌آورد تا با «بعدی» فوراً پخش شود.
+
+    برای «پرش» در لیست پخش: خودِ پخش را عوض نمی‌کند، فقط ترتیب صف را.
+    """
+    t = remove(chat_id, uid)
+    if t is None:
+        return None
+    get_queue(chat_id).appendleft(t)
+    _persist(chat_id)
+    return t
+
+
+def queue_len(chat_id: int) -> int:
+    return len(get_queue(chat_id))
+
+
 def progress_bar(position: int, duration: int, length: int = 12) -> str:
     def fmt(sec: int) -> str:
         sec = int(sec)
