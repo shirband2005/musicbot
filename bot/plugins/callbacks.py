@@ -32,7 +32,7 @@ from bot import player
 from bot import queue as q
 from bot import ui
 from bot import youtube
-from bot.plugins.start import HELP_NODES, help_markup, help_text
+from bot.plugins.start import help_content, help_markup, resolve_node
 
 LOGGER = logging.getLogger("musicbot.callbacks")
 
@@ -56,7 +56,7 @@ _MODE_TOAST = {
 async def help_nav_cb(client: Client, cq: CallbackQuery):
     if not await auth.guard_callback(client, cq):
         return
-    node = cq.data.split("|", 1)[1]
+    node = str(cq.data or "").split("|", 1)[1]
     if node == "close":
         try:
             await cq.message.delete()
@@ -64,13 +64,14 @@ async def help_nav_cb(client: Client, cq: CallbackQuery):
             pass
         await cq.answer("بسته شد")
         return
-    if node not in HELP_NODES:
-        await cq.answer()
-        return
+    node = resolve_node(node)      # گره‌های قدیمی به جدید نگاشت می‌شوند
     try:
-        await cq.message.edit_text(help_text(node), reply_markup=help_markup(node))
-    except Exception:  # noqa: BLE001
-        pass
+        url = await auth.resolve_support_url(client)
+        text, ents = help_content(node)
+        await cq.message.edit_text(text, entities=ents,
+                                   reply_markup=help_markup(node, url))
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("help nav: %s", e)
     await cq.answer()
 
 
