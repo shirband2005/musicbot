@@ -20,6 +20,7 @@ from bot import auth
 from bot import database as db
 from bot import group_config as gc
 from bot import logs
+from bot import messages as msg
 from bot import platform_pref
 from bot import player
 from bot import queue as q
@@ -30,8 +31,54 @@ from bot.queue import Track
 
 LOGGER = logging.getLogger("musicbot.play")
 
-GROUP_ONLY = "این دستور فقط داخل گروه (با ویس‌چت فعال) کار می‌کند."
-PLAYER_OFF = "🔇 موزیک‌پلیر در این گروه خاموش است."
+
+def _is_no_voice_chat(err: str) -> bool:
+    """خطای «ویس‌چت روشن نیست» را از بقیه‌ی خطاها تشخیص می‌دهد."""
+    up = err.upper()
+    return "GROUPCALL" in up or "no active" in err.lower()
+
+
+async def _show(status, payload) -> None:
+    """یک پیام آماده‌ی messages.py را در پیام وضعیت نشان می‌دهد."""
+    text, ents, kb = payload
+    try:
+        await status.edit_text(text, entities=ents,
+                              reply_markup=kb if kb.inline_keyboard else None)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("show status: %s", e)
+
+
+async def _send(message: Message, payload) -> None:
+    text, ents, kb = payload
+    await message.reply_text(text, entities=ents,
+                             reply_markup=kb if kb.inline_keyboard else None)
+
+
+async def _deny_group(client: Client, message: Message) -> None:
+    """علت دقیق بسته بودن گروه را می‌گوید — نه یک پیام کلی.
+
+    نسخه‌ی قبلی برای همه‌ی حالت‌ها یک متن یکسان می‌فرستاد؛ کاربر نمی‌فهمید
+    اشتراک ندارد، اشتراکش تمام شده، مکث شده، یا مالک خاموش کرده است.
+    """
+    from bot import subscription as sub
+    from bot.plugins.start import pv_url
+
+    chat_id = message.chat.id
+    support = await auth.resolve_support_url(client)
+
+    if sub.is_paused(chat_id):
+        await _send(message, msg.subscription_paused(support))
+        return
+    if sub.is_expired(chat_id):
+        await _send(message, msg.subscription_expired(
+            await pv_url(client, "renew"), support))
+        return
+    if not sub.has_subscription(chat_id) and not sub.has_free_access(chat_id):
+        await _send(message, msg.no_subscription(
+            await pv_url(client, "buy"), support))
+        return
+    # اشتراک هست ولی مالک پلیر را خاموش کرده
+    await _send(message, msg.player_off(support))
 
 
 async def _gate(client: Client, message: Message) -> bool:
@@ -40,12 +87,12 @@ async def _gate(client: Client, message: Message) -> bool:
         # در خصوصی فقط مالک/ویژه
         if not await auth.guard_message(client, message):
             return False
-        await message.reply_text(GROUP_ONLY)
+        from bot.plugins.start import add_group_url
+        await _send(message, msg.group_only(await add_group_url(client)))
         return False
-    # ۱) اول: آیا گروه فعال است؟ (خاموش → «گروه دسترسی ندارد»)
+    # ۱) اول: آیا گروه فعال است؟ — علت را دقیق بگو، نه یک پیام کلی
     if not gc.is_enabled(message.chat.id):
-        url = await auth.resolve_support_url(client)
-        await message.reply_text(auth.DENY_GROUP, reply_markup=auth.support_kb(url))
+        await _deny_group(client, message)
         return False
     # ۲) سپس: آیا این کاربر دسترسی دارد؟ (نه → «شما دسترسی ندارید»)
     if not await auth.guard_message(client, message):
@@ -73,13 +120,13 @@ def _requester_id(message: Message) -> int:
 async def _play_track(client: Client, message: Message, info: dict, is_video: bool, query: str, status):
     """یک نتیجه‌ی آماده را پخش/به صف اضافه می‌کند و پیام مناسب می‌دهد."""
     if not info.get("stream_url"):
-        await status.edit_text("❌ لینک قابل پخشی پیدا نشد.")
+        await _show(status, msg.not_found(query))
         return
 
     if info.get("duration") and info["duration"] > config.DURATION_LIMIT:
-        await status.edit_text(
-            f"❌ طول محتوا ({info['duration_text']}) بیش از حد مجاز است."
-        )
+        limit_min = config.DURATION_LIMIT // 60
+        await _show(status, msg.too_long(info["duration_text"],
+                                        f"{limit_min} دقیقه"))
         return
 
     source = info.get("source", "youtube")
@@ -106,19 +153,17 @@ async def _play_track(client: Client, message: Message, info: dict, is_video: bo
             pos = await player.play_or_queue(message.chat.id, track)
     except Exception as e:  # noqa: BLE001
         LOGGER.error("playback error: %s", e)
-        err = str(e)
-        if "GROUPCALL" in err.upper() or "no active" in err.lower():
-            await status.edit_text("❌ ابتدا ویس‌چت گروه را روشن کنید.")
+        if _is_no_voice_chat(str(e)):
+            await _show(status, msg.no_voice_chat())
         else:
-            await status.edit_text(f"❌ خطا در پخش:\n`{e}`")
+            url = await auth.resolve_support_url(client)
+            await _show(status, msg.playback_error(e, url))
         return
 
     if pos == 0:
         await status.delete()  # پنل پخش خودش ارسال می‌شود
     else:
-        await status.edit_text(
-            f"✅ به صف اضافه شد (موقعیت {pos}):\n**{track.title}**\n⏱ {track.duration_text}"
-        )
+        await _show(status, msg.queued(pos, track.title, track.duration_text))
 
     # لاگ پخش در کانال (بدون بلاک کردن پاسخ)
     try:
@@ -157,7 +202,8 @@ async def _search(chat_id: int, query: str, is_video: bool, status):
         except Exception as e:  # noqa: BLE001
             LOGGER.warning("youtube video error: %s", e)
             friendly = logs.classify_youtube_error(str(e))
-            await status.edit_text(f"❌ {friendly}\n\n`{str(e)[:300]}`")
+            url = await auth.resolve_support_url(client)
+            await _show(status, msg.playback_error(e, url, friendly))
             return None
 
     # فقط ساوندکلاد: مستقیم همان دستور
@@ -165,7 +211,7 @@ async def _search(chat_id: int, query: str, is_video: bool, status):
         sc = await soundcloud.search(query)
         if sc and sc.get("stream_url"):
             return sc
-        await status.edit_text("❌ در ساوند کلاد پیدا نشد.")
+        await _show(status, msg.not_found(query))
         return None
 
     # both یا youtube: اول اسم دقیق را از یوتیوب بگیر (سبک، بدون دانلود)
@@ -210,7 +256,8 @@ async def _search(chat_id: int, query: str, is_video: bool, status):
     except Exception as e:  # noqa: BLE001
         LOGGER.warning("youtube error: %s", e)
         friendly = logs.classify_youtube_error(str(e))
-        await status.edit_text(f"❌ {friendly}\n\n`{str(e)[:300]}`")
+        url = await auth.resolve_support_url(client)
+        await _show(status, msg.playback_error(e, url, friendly))
         return None
 
 
@@ -231,7 +278,8 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
         return
 
     db.add_chat(message.chat.id)
-    status = await message.reply_text("🔎 در حال جست‌وجو...")
+    _t, _e, _k = msg.searching(query, 1)
+    status = await message.reply_text(_t, entities=_e)
     info = await _search(message.chat.id, query, is_video, status)
     if info is None:
         return
@@ -265,8 +313,7 @@ async def _play_telegram_file(client: Client, message: Message) -> bool:
     # --- مسیر استریم مستقیم برای فایل حجیم (بدون دانلود) ---
     if size >= _TG_STREAM_THRESHOLD:
         status = await message.reply_text(
-            f"📡 فایل حجیم ({size // (1024*1024)} مگ) — استریم مستقیم...\n"
-            "بدون دانلود، همه با اینترنت سرور."
+            ""
         )
         track = Track(
             title=title, stream_url="", webpage_url="",
@@ -283,9 +330,10 @@ async def _play_telegram_file(client: Client, message: Message) -> bool:
             LOGGER.error("tg stream playback error: %s", e)
             err = str(e)
             if "GROUPCALL" in err.upper() or "no active" in err.lower():
-                await status.edit_text("❌ ابتدا ویس‌چت گروه را روشن کنید.")
+                await _show(status, msg.no_voice_chat())
             else:
-                await status.edit_text(f"❌ خطا در استریم:\n`{str(e)[:200]}`")
+                url = await auth.resolve_support_url(client)
+                await _show(status, msg.playback_error(e, url))
             return True
         if pos == 0:
             await status.delete()
@@ -294,13 +342,15 @@ async def _play_telegram_file(client: Client, message: Message) -> bool:
         return True
 
     # --- مسیر دانلود برای فایل کوچک ---
-    status = await message.reply_text("⬇️ در حال آماده‌سازی فایل...")
+    _t, _e, _k = msg.downloading(title)
+    status = await message.reply_text(_t, entities=_e)
     try:
         os.makedirs(player.DOWNLOAD_DIR, exist_ok=True)
         path = await client.download_media(reply, file_name=os.path.join(player.DOWNLOAD_DIR, ""))
     except Exception as e:  # noqa: BLE001
         LOGGER.warning("tg media download failed: %s", e)
-        await status.edit_text(f"❌ دانلود فایل ناموفق:\n`{str(e)[:200]}`")
+        url = await auth.resolve_support_url(client)
+        await _show(status, msg.download_failed(url))
         return True
 
     track = Track(
@@ -318,9 +368,10 @@ async def _play_telegram_file(client: Client, message: Message) -> bool:
         LOGGER.error("playback error: %s", e)
         err = str(e)
         if "GROUPCALL" in err.upper() or "no active" in err.lower():
-            await status.edit_text("❌ ابتدا ویس‌چت گروه را روشن کنید.")
+            await _show(status, msg.no_voice_chat())
         else:
-            await status.edit_text(f"❌ خطا در پخش:\n`{e}`")
+            url = await auth.resolve_support_url(client)
+            await _show(status, msg.playback_error(e, url))
         return True
     if pos == 0:
         await status.delete()
@@ -372,11 +423,12 @@ async def bare_play_cmd(client: Client, message: Message):
     if not query and message.reply_to_message and message.reply_to_message.text:
         query = message.reply_to_message.text.strip()
     if not query:
-        await message.reply_text("نام آهنگ/فیلم یا لینک را بده، یا روی یک فایل ریپلای کن.\nمثال: `پخش اهنگ شادمهر`")
+        await _send(message, msg.not_found())
         return
 
     db.add_chat(message.chat.id)
-    status = await message.reply_text("🔎 در حال جست‌وجو...")
+    _t, _e, _k = msg.searching(query, 1)
+    status = await message.reply_text(_t, entities=_e)
     info = await _search(message.chat.id, query, is_video, status)
     if info is None:
         return
@@ -405,7 +457,8 @@ async def _start_random(client: Client, message: Message):
     from bot import group_config as gc
     gc.set_mode(message.chat.id, gc.MODE_RANDOM)
     db.add_chat(message.chat.id)
-    status = await message.reply_text("🔀 پخش رندوم روشن شد — در حال انتخاب آهنگ...")
+    _t, _e, _k = msg.searching("پخش رندوم", 1)
+    status = await message.reply_text(_t, entities=_e)
     try:
         with logs.stage("RANDOM_PLAY", message.chat.id):
             await player.play_random(message.chat.id)
@@ -413,12 +466,13 @@ async def _start_random(client: Client, message: Message):
         LOGGER.error("random play error: %s", e)
         err = str(e)
         if "GROUPCALL" in err.upper() or "no active" in err.lower():
-            await status.edit_text("❌ ابتدا ویس‌چت گروه را روشن کنید.")
+            await _show(status, msg.no_voice_chat())
         else:
-            await status.edit_text(f"❌ خطا در پخش رندوم:\n`{str(e)[:200]}`")
+            url = await auth.resolve_support_url(client)
+            await _show(status, msg.playback_error(e, url))
         return
     if q.now_playing(message.chat.id) is None:
-        await status.edit_text("❌ آرشیو خالی است. اول چند آهنگ به کانال آرشیو اضافه/پخش کن.")
+        await _show(status, msg.empty_archive())
     else:
         await status.delete()
 
@@ -437,7 +491,7 @@ async def pause_cmd(client: Client, message: Message):
         return
     track = q.now_playing(message.chat.id)
     if not track:
-        await message.reply_text("چیزی در حال پخش نیست.")
+        await _send(message, msg.nothing_playing())
         return
     from bot import call
     await call.pause(message.chat.id)
@@ -453,7 +507,7 @@ async def resume_cmd(client: Client, message: Message):
         return
     track = q.now_playing(message.chat.id)
     if not track:
-        await message.reply_text("چیزی در حال پخش نیست.")
+        await _send(message, msg.nothing_playing())
         return
     from bot import call
     await call.resume(message.chat.id)
@@ -468,7 +522,7 @@ async def skip_cmd(client: Client, message: Message):
     if not await _gate(client, message):
         return
     if q.now_playing(message.chat.id) is None:
-        await message.reply_text("چیزی در حال پخش نیست.")
+        await _send(message, msg.nothing_playing())
         return
     nxt = await player.skip(message.chat.id)
     if nxt:
@@ -483,7 +537,7 @@ async def stop_cmd(client: Client, message: Message):
     if not await _gate(client, message):
         return
     if q.now_playing(message.chat.id) is None:
-        await message.reply_text("چیزی در حال پخش نیست.")
+        await _send(message, msg.nothing_playing())
         return
     await player.stop(message.chat.id)
     await message.reply_text("⏹ پخش متوقف و از کال خارج شدم.")
@@ -496,7 +550,7 @@ async def queue_cmd(client: Client, message: Message):
         return
     cur = q.now_playing(message.chat.id)
     if not cur:
-        await message.reply_text("صف خالی است.")
+        await _send(message, msg.empty_queue())
         return
     lines = [f"🎧 **در حال پخش:** {cur.title} — `{cur.duration_text}`", ""]
     items = list(q.get_queue(message.chat.id))
