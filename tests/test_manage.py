@@ -377,7 +377,7 @@ def test_player_panel_accordion_platform(fresh_db):
     ap._plat_open[cid] = True
     _t, _e, kb = ap.panel(cid, "گروه من")
     assert shape(kb) == [2, 1, 3, 1, 1]
-    assert "ساوندکلاد" in flat(kb) and "یوتیوب" in flat(kb) and "هر دو" in flat(kb)
+    assert "ساوندکلاد" in flat(kb) and "یوتیوب" in flat(kb) and "آزاد" in flat(kb)
     assert f"mp|lock_youtube|{cid}" in cbs(kb)
     ap._plat_open.pop(cid, None)
 
@@ -401,7 +401,7 @@ def test_player_panel_lock_marker(fresh_db):
 
     cid = -100555
     text, _e, _kb = ap.panel(cid, "گ")
-    assert "هر دو" in text
+    assert "آزاد" in text
     assert "(قفل)" not in text
 
     gc.set_lock(cid, gc.LOCK_YOUTUBE)

@@ -157,16 +157,17 @@ _MODE_ICON = {
 _MODE_ORDER = (gc.MODE_QUEUE, gc.MODE_REPEAT, gc.MODE_RANDOM)
 
 _PLAT_FULL = {
-    platform_pref.BOTH: "هر دو",
+    platform_pref.DATABASE: "دیتابیس",
     platform_pref.YOUTUBE: "یوتیوب",
     platform_pref.SOUNDCLOUD: "ساوندکلاد",
 }
 _PLAT_ICON = {
-    platform_pref.BOTH: ui.EMO_BOTH,
+    platform_pref.DATABASE: ui.EMO_DATABASE,
     platform_pref.YOUTUBE: ui.EMO_YOUTUBE,
     platform_pref.SOUNDCLOUD: ui.EMO_SOUNDCLOUD,
 }
-_PLAT_ORDER = (platform_pref.SOUNDCLOUD, platform_pref.YOUTUBE, platform_pref.BOTH)
+_PLAT_ORDER = (platform_pref.DATABASE, platform_pref.YOUTUBE,
+               platform_pref.SOUNDCLOUD)
 
 # قفل پلتفرم توسط مالک → کدام پلتفرم مجاز است
 _LOCK_TO_PLAT = {

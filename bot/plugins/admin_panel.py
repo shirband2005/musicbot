@@ -32,16 +32,16 @@ LOGGER = logging.getLogger("musicbot.adminpanel")
 _plat_open: dict = {}
 
 _LOCK_LABEL = {
-    gc.LOCK_NONE: "هر دو",
+    gc.LOCK_NONE: "آزاد",
     gc.LOCK_YOUTUBE: "یوتیوب",
     gc.LOCK_SOUNDCLOUD: "ساوندکلاد",
 }
 _LOCK_ICON = {
-    gc.LOCK_NONE: ui.EMO_BOTH,
+    gc.LOCK_NONE: ui.EMO_DATABASE,
     gc.LOCK_YOUTUBE: ui.EMO_YOUTUBE,
     gc.LOCK_SOUNDCLOUD: ui.EMO_SOUNDCLOUD,
 }
-_LOCK_ORDER = (gc.LOCK_SOUNDCLOUD, gc.LOCK_YOUTUBE, gc.LOCK_NONE)
+_LOCK_ORDER = (gc.LOCK_NONE, gc.LOCK_YOUTUBE, gc.LOCK_SOUNDCLOUD)
 
 
 def _is_owner(message: Message) -> bool:

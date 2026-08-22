@@ -26,7 +26,9 @@ class Track:
     query: str = ""  # عبارت جست‌وجوی اصلی (برای دریافت رسانه/بازپخش)
     video_id: str = ""  # شناسه ویدیوی یوتیوب (کلید کش)
     local_path: str = ""  # مسیر فایل دانلودشده‌ی محلی (برای پخش پایدار در کال)
-    source: str = "youtube"  # منبع: youtube | soundcloud | telegram | telegram_stream
+    performer: str = ""  # خواننده (از ربات جستجو یا فایل تلگرام)
+    source: str = "youtube"  # youtube | soundcloud | searchbot | archive |
+                             # telegram | telegram_stream
     # برای استریم مستقیم فایل حجیم تلگرام (بدون دانلود کامل):
     tg_chat_id: int = 0  # چتی که فایل در آن است (برای دسترسی یوزربات)
     tg_msg_id: int = 0   # آی‌دی پیام حاوی فایل

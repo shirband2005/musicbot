@@ -162,6 +162,26 @@ async def _ensure_local_file(track: Track) -> bool:
     if track.source == "telegram_stream":
         return bool(track.tg_chat_id and track.tg_msg_id)
 
+    # منبع «ربات جستجو»: فایل همان لحظه دانلود شده و مسیر محلی دارد.
+    # آرشیو در پس‌زمینه انجام می‌شود تا دفعه بعد از کانال دیتابیس بیاید.
+    if track.source == "searchbot":
+        if track.local_path and os.path.isfile(track.local_path):
+            if not getattr(track, "_archived", False):
+                track._archived = True
+                asyncio.create_task(_archive_searchbot(track))
+            return True
+        # فایل موقت پاک شده — دوباره از ربات جستجو بگیر
+        try:
+            from bot import searchbot
+            got = await searchbot.fetch(track.query or track.title)
+            if got and got.get("path") and os.path.isfile(got["path"]):
+                track.local_path = got["path"]
+                track.stream_url = got["path"]
+                return True
+        except Exception as e:  # noqa: BLE001
+            logs.debug("searchbot refetch: %s", e)
+        return False
+
     # منبع آرشیو: رکورد آماده در info.archive_rec است → مستقیم از کانال دانلود
     if track.source == "archive":
         if track.local_path and os.path.isfile(track.local_path):
@@ -293,6 +313,34 @@ def _prune_cache() -> None:
                 pass
     except Exception as e:  # noqa: BLE001
         logs.debug("prune cache: %s", e)
+
+
+async def _archive_searchbot(track: Track) -> None:
+    """در پس‌زمینه: آهنگ گرفته‌شده از ربات جستجو را در کانال دیتابیس ثبت می‌کند.
+
+    فایل همان فایلی است که پخش می‌شود، پس **پاک نمی‌شود** — فقط آپلود می‌شود.
+    دفعه بعد همین آهنگ از کانال دیتابیس می‌آید و ربات جستجو لازم نیست.
+    """
+    try:
+        from bot import channel
+        import config
+        if not config.ARCHIVE_CHANNEL:
+            return
+        path = track.local_path
+        if not path or not os.path.isfile(path):
+            return
+        q = track.query or track.title
+        if channel.archive_lookup(query=q) or channel.archive_lookup(query=track.title):
+            return
+        await channel.publish_song(
+            app, path, title=track.title,
+            performer=getattr(track, "performer", "") or "",
+            duration=int(track.duration or 0),
+            source="searchbot", added_by=track.requester_id or 0,
+            is_video=False, key=channel._norm_key("", track.title),
+        )
+    except Exception as e:  # noqa: BLE001
+        logs.debug("archive searchbot: %s", e)
 
 
 async def _archive_soundcloud(track: Track) -> None:

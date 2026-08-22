@@ -78,10 +78,10 @@ def test_platform_cycle_and_effective_lock(fresh_db):
     from bot import platform_pref as pp
     from bot import group_config as gc
     cid = -300
-    assert pp.get(cid) == pp.BOTH
+    assert pp.get(cid) == pp.DATABASE          # پیش‌فرض: روش دیتابیس
     assert pp.cycle(cid) == pp.YOUTUBE
     assert pp.cycle(cid) == pp.SOUNDCLOUD
-    assert pp.cycle(cid) == pp.BOTH  # چرخش کامل
+    assert pp.cycle(cid) == pp.DATABASE  # چرخش کامل
     # قفل باید انتخاب کاربر را override کند
     gc.set_lock(cid, gc.LOCK_YOUTUBE)
     assert pp.effective(cid) == pp.YOUTUBE

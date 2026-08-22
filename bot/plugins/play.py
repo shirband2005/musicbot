@@ -143,6 +143,8 @@ async def _play_track(client: Client, message: Message, info: dict, is_video: bo
         query=query,
         video_id=info.get("id") or "",
         source=source,
+        performer=info.get("performer", "") or "",
+        local_path=info.get("local_path", "") or "",
     )
     # اگر منبع آرشیو است، رکورد آماده را به track بده تا دوباره جست‌وجو نشود
     if source == "archive" and info.get("archive_rec"):
@@ -178,40 +180,126 @@ async def _play_track(client: Client, message: Message, info: dict, is_video: bo
         pass
 
 
-async def _search(chat_id: int, query: str, is_video: bool, status):
-    """جست‌وجوی هوشمند طبق ترجیح پلتفرم (با اعمال قفل گروه). info یا None.
+def _archive_info(rec: dict, fallback_title: str, vid: str = "") -> dict:
+    """رکورد کانال دیتابیس را به شکل info قابل پخش برمی‌گرداند (بدون دانلود)."""
+    return {
+        "id": vid or ("q:" + fallback_title),
+        "title": rec.get("title") or fallback_title,
+        "duration": rec.get("duration") or 0,
+        "duration_text": _fmt_dur(int(rec.get("duration") or 0)),
+        "stream_url": "archive", "webpage_url": rec.get("url") or "",
+        "thumbnail": None, "source": "archive",
+        "archive_rec": rec,
+    }
 
-    منطق (فقط برای صوت؛ ویدیو مستقیم یوتیوب):
-    - both: یوتیوب اسمِ دقیق → آرشیو با video_id/اسم → ساوندکلاد با اسم دقیق →
-            ساوندکلاد با دستور اصلی → یوتیوب دانلود (کیفیت پایین)
-    - youtube: یوتیوب اسمِ دقیق → آرشیو → ساوندکلاد با اسم دقیق → یوتیوب دانلود
-    - soundcloud: مستقیم ساوندکلاد با دستور اصلی
-    آرشیو در _ensure_local_file هنگام پخش هم دوباره چک می‌شود؛ اینجا سریع‌ترین
-    منبع را انتخاب می‌کنیم.
+
+async def _from_database_bot(client, query: str, status):
+    """روش «دیتابیس»: از ربات جستجوی خودمان بگیر، دانلود کن، آماده‌ی پخش.
+
+    خروجی info با `stream_url` = مسیر فایل محلی، یا None اگر نشد.
+    """
+    from bot import channel
+    from bot import searchbot
+
+    if not searchbot.enabled():
+        LOGGER.info("SEARCHBOT خاموش است (SEARCH_GROUP تنظیم نشده)")
+        return None
+
+    await _show(status, msg.searching(query, 2))
+    got = await searchbot.fetch(query)
+    if not got:
+        return None
+
+    disp = channel.full_title(got["title"], got.get("performer", ""))
+    dur = int(got.get("duration") or 0)
+    return {
+        "id": "",
+        "title": disp,
+        "duration": dur,
+        "duration_text": _fmt_dur(dur),
+        "stream_url": got["path"],          # فایل محلی، آماده‌ی استریم
+        "webpage_url": "",
+        "thumbnail": None,
+        "source": "searchbot",
+        "local_path": got["path"],
+        "performer": got.get("performer", ""),
+        "file_size": got.get("file_size", 0),
+    }
+
+
+async def _search(chat_id: int, query: str, is_video: bool, status,
+                  client=None):
+    """جست‌وجو طبق روش انتخابی گروه. info یا None.
+
+    **هر سه روش اول کانال دیتابیس خودمان را چک می‌کنند** — اگر آهنگ آنجا بود،
+    بدون دانلود از تلگرام بازیابی می‌شود.
+
+    روش‌ها (تصمیم کاربر):
+      · دیتابیس   → ربات جستجوی خودمان (inline با یوزربات)، fallback: یوتیوب
+      · یوتیوب    → مستقیم یوتیوب، بدون امتحان ساوندکلاد
+      · ساوندکلاد → اول خودِ دستور؛ اگر نبود، اسم دقیق از یوتیوب و دوباره ساوندکلاد
     """
     from bot import channel
     mode = platform_pref.effective(chat_id)
 
-    # ویدیو: فقط یوتیوب
+    # ---------- ویدیو: فقط یوتیوب ----------
     if is_video:
         try:
             return await youtube.get_media(query, video=True)
         except Exception as e:  # noqa: BLE001
             LOGGER.warning("youtube video error: %s", e)
             friendly = logs.classify_youtube_error(str(e))
-            url = await auth.resolve_support_url(client)
+            url = await auth.resolve_support_url(client) if client else ""
             await _show(status, msg.playback_error(e, url, friendly))
             return None
 
-    # فقط ساوندکلاد: مستقیم همان دستور
+    # ---------- گام صفر (مشترک): کانال دیتابیس با خودِ دستور ----------
+    try:
+        rec = channel.archive_lookup(query=query)
+        if rec:
+            LOGGER.info("ARCHIVE HIT (direct) | %s", rec.get("title"))
+            return _archive_info(rec, query)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("archive lookup direct: %s", e)
+
+    # ---------- روش دیتابیس (ربات جستجو) ----------
+    if mode == platform_pref.DATABASE:
+        info = await _from_database_bot(client, query, status)
+        if info:
+            return info
+        LOGGER.info("SEARCHBOT نتیجه نداد → fallback به یوتیوب")
+        await _show(status, msg.searching(query, 1))
+        # fallback: مسیر یوتیوب (پایین‌تر ادامه می‌دهد)
+
+    # ---------- ساوندکلاد ----------
     if mode == platform_pref.SOUNDCLOUD:
+        # ۱) خودِ دستور را مستقیم در ساوندکلاد بگرد
         sc = await soundcloud.search(query)
         if sc and sc.get("stream_url"):
             return sc
+        # ۲) اسم دقیق را از یوتیوب بگیر و با آن اسم دوباره ساوندکلاد
+        exact = ""
+        try:
+            meta = await youtube.search_title(query)
+            exact = (meta.get("title") or "").strip()
+        except Exception as e:  # noqa: BLE001
+            LOGGER.debug("yt title for sc: %s", e)
+        if exact and exact != query:
+            # قبل از جست‌وجو، دیتابیس را با اسم دقیق هم چک کن
+            try:
+                rec = channel.archive_lookup(query=exact)
+                if rec:
+                    return _archive_info(rec, exact)
+            except Exception:  # noqa: BLE001
+                pass
+            sc = await soundcloud.search(exact)
+            if sc and sc.get("stream_url"):
+                return sc
         await _show(status, msg.not_found(query))
         return None
 
-    # both یا youtube: اول اسم دقیق را از یوتیوب بگیر (سبک، بدون دانلود)
+    # ---------- یوتیوب (و fallback روش دیتابیس) ----------
+    # اسم دقیق را بگیر تا هم دیتابیس را دقیق‌تر چک کنیم هم video_id داشته باشیم
     exact_title = ""
     yt_vid = ""
     try:
@@ -221,39 +309,23 @@ async def _search(chat_id: int, query: str, is_video: bool, status):
     except Exception as e:  # noqa: BLE001
         LOGGER.debug("yt title: %s", e)
 
-    # چک آرشیو با video_id یا اسم دقیق (اگر بود، پخش از تلگرام بدون دانلود)
     if exact_title or yt_vid:
         try:
-            rec = channel.archive_lookup(video_id=yt_vid, query=(exact_title or query))
+            rec = channel.archive_lookup(video_id=yt_vid,
+                                        query=(exact_title or query))
             if rec:
-                await status.edit_text(f"⚡️ از آرشیو: {rec.get('title') or exact_title}")
-                return {
-                    "id": yt_vid or ("q:" + (exact_title or query)),
-                    "title": rec.get("title") or exact_title or query,
-                    "duration": rec.get("duration") or 0,
-                    "duration_text": _fmt_dur(int(rec.get("duration") or 0)),
-                    "stream_url": "archive", "webpage_url": "",
-                    "thumbnail": None, "source": "archive",
-                    "archive_rec": rec,
-                }
+                LOGGER.info("ARCHIVE HIT (exact) | %s", rec.get("title"))
+                return _archive_info(rec, exact_title or query, yt_vid)
         except Exception as e:  # noqa: BLE001
             LOGGER.debug("archive lookup: %s", e)
 
-    # ساوندکلاد با اسم دقیق، بعد با دستور اصلی
-    sc_queries = [exact_title, query] if exact_title and exact_title != query else [query]
-    for scq in sc_queries:
-        sc = await soundcloud.search(scq)
-        if sc and sc.get("stream_url"):
-            return sc
-
-    # حالت only-youtube یا هر دو: در نهایت یوتیوب (دانلود با کیفیت پایین)
     try:
-        info = await youtube.get_media(query, video=False)
-        return info
+        await _show(status, msg.searching(query, 2))
+        return await youtube.get_media(query, video=False)
     except Exception as e:  # noqa: BLE001
         LOGGER.warning("youtube error: %s", e)
         friendly = logs.classify_youtube_error(str(e))
-        url = await auth.resolve_support_url(client)
+        url = await auth.resolve_support_url(client) if client else ""
         await _show(status, msg.playback_error(e, url, friendly))
         return None
 
@@ -277,7 +349,7 @@ async def _handle_play(client: Client, message: Message, is_video: bool):
     db.add_chat(message.chat.id)
     _t, _e, _k = msg.searching(query, 1)
     status = await message.reply_text(_t, entities=_e)
-    info = await _search(message.chat.id, query, is_video, status)
+    info = await _search(message.chat.id, query, is_video, status, client)
     if info is None:
         return
     await _play_track(client, message, info, is_video, query, status)
@@ -426,7 +498,7 @@ async def bare_play_cmd(client: Client, message: Message):
     db.add_chat(message.chat.id)
     _t, _e, _k = msg.searching(query, 1)
     status = await message.reply_text(_t, entities=_e)
-    info = await _search(message.chat.id, query, is_video, status)
+    info = await _search(message.chat.id, query, is_video, status, client)
     if info is None:
         return
     await _play_track(client, message, info, is_video, query, status)

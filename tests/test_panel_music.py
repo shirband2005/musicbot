@@ -307,7 +307,7 @@ def test_platform_menu_closed_and_open(fresh_db):
 
     panel.set_menu(-100, panel.MENU_PLAT)
     kbm = panel.panel_keyboard(-100, mk_track(), 100, False)
-    assert labels(kbm)[6] == ["ساوندکلاد", "یوتیوب", "هر دو"]
+    assert labels(kbm)[6] == ["دیتابیس", "یوتیوب", "ساوندکلاد"]
     assert "p|plat_set|youtube" in cbs(kbm)
     panel.reset_menus(-100)
 
@@ -331,7 +331,7 @@ def test_platform_label_respects_lock(fresh_db):
     from bot import group_config as gc
     from bot import panel
 
-    assert panel.platform_label(-500) == "هر دو"
+    assert panel.platform_label(-500) == "دیتابیس"
     gc.set_lock(-500, gc.LOCK_YOUTUBE)
     assert panel.platform_label(-500) == "یوتیوب (قفل)"
 
