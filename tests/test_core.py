@@ -170,32 +170,31 @@ async def test_fa_command_matches_and_normalizes(fresh_db):
     assert await f(None, m2) is False
 
 
-# ---------------- رنگ‌بندی پنل مدیریت ----------------
+# ---------------- رنگ‌بندی پنل مدیریت پلیر ----------------
 def test_admin_panel_colors(fresh_db):
-    from pyrogram import enums
+    """قاعده‌ی جدید: فقط حالت فعال رنگ دارد؛ قرمزِ «این حالت نیست» حذف شد."""
     from bot import group_config as gc
-    from bot.plugins.admin_panel import _panel
+    from bot import ui
+    from bot.plugins.admin_panel import panel
     cid = -500
 
-    def styles(kb):
-        return [[b.style for b in row] for row in kb.inline_keyboard]
-
-    # پیش‌فرض: خاموش → «روشن» قرمز، «خاموش» سبز
-    _, kb = _panel(cid)
+    # پیش‌فرض خاموش → «خاموش» قرمز، «روشن» بی‌رنگ
+    _t, _e, kb = panel(cid, "گروه تست")
     row0 = kb.inline_keyboard[0]
-    assert row0[0].text == "روشن" and row0[0].style == enums.ButtonStyle.DANGER
-    assert row0[1].text == "خاموش" and row0[1].style == enums.ButtonStyle.SUCCESS
+    assert row0[0].text == "روشن" and str(row0[0].style) == str(ui.PLAIN)
+    assert row0[1].text == "خاموش" and str(row0[1].style) == str(ui.RED)
 
-    # روشن + قفل ساوندکلاد
+    # روشن → «روشن» سبز، «خاموش» بی‌رنگ
     gc.set_enabled(cid, True)
-    gc.set_lock(cid, gc.LOCK_SOUNDCLOUD)
-    _, kb = _panel(cid)
-    labels = {b.text: b.style for row in kb.inline_keyboard for b in row}
-    assert labels["روشن"] == enums.ButtonStyle.SUCCESS
-    assert labels["خاموش"] == enums.ButtonStyle.DANGER
-    assert labels["ساوندکلاد"] == enums.ButtonStyle.SUCCESS
-    assert labels["یوتیوب"] == enums.ButtonStyle.DANGER
-    assert labels["انتخاب پلتفرم"] == enums.ButtonStyle.PRIMARY  # نمایشی، آبی
+    _t, _e, kb = panel(cid, "گروه تست")
+    row0 = kb.inline_keyboard[0]
+    assert str(row0[0].style) == str(ui.GREEN)
+    assert str(row0[1].style) == str(ui.PLAIN)
+
+    # دکمه‌ی بی‌کار (noop) دیگر وجود ندارد
+    cbs = [b.callback_data for row in kb.inline_keyboard for b in row
+           if b.callback_data]
+    assert not any("noop" in c for c in cbs)
 
 
 # ---------------- دکمه پلتفرم در پنل پخش بسته به قفل ----------------
