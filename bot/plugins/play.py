@@ -169,14 +169,11 @@ async def _play_track(client: Client, message: Message, info: dict, is_video: bo
     try:
         import asyncio
         from bot import channel
+        from bot import channel_ui as cui
         chat_title = getattr(message.chat, "title", "") or str(message.chat.id)
-        asyncio.create_task(channel.log(
-            f"🎵 **پخش جدید**\n"
-            f"• آهنگ: {track.title}\n"
-            f"• منبع: {track.source}\n"
-            f"• گروه: {chat_title}\n"
-            f"• توسط: {_requester_name(message)}"
-        ))
+        asyncio.create_task(channel.log(*cui.now_playing(
+            track.title, track.source, chat_title,
+            _requester_name(message), _requester_id(message))))
     except Exception:  # noqa: BLE001
         pass
 

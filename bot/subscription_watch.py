@@ -71,6 +71,15 @@ async def _check_once(client) -> None:
         except Exception:  # noqa: BLE001
             pass
 
+        # ثبت در کانال لاگ (قبلاً هیچ‌جا ثبت نمی‌شد)
+        try:
+            from bot import channel
+            from bot import channel_ui as cui
+            name = await _chat_name(client, chat_id)
+            await channel.log(*cui.sub_expired(name, chat_id))
+        except Exception:  # noqa: BLE001
+            pass
+
         buyer = row.get("buyer_id") or 0
         if buyer:
             btext, bents, bkb = _buyer_text()
@@ -93,4 +102,19 @@ async def _check_once(client) -> None:
             gc.set_enabled(chat_id, False)
         except Exception:  # noqa: BLE001
             pass
+        try:
+            from bot import channel
+            from bot import channel_ui as cui
+            name = await _chat_name(client, chat_id)
+            await channel.log(*cui.free_access_ended(name, chat_id))
+        except Exception:  # noqa: BLE001
+            pass
         LOGGER.info("FREE ACCESS ENDED | chat=%s خاموش شد", chat_id)
+
+
+async def _chat_name(client, chat_id: int) -> str:
+    try:
+        chat = await client.get_chat(chat_id)
+        return chat.title or str(chat_id)
+    except Exception:  # noqa: BLE001
+        return str(chat_id)

@@ -1,51 +1,196 @@
-"""لاگ رویدادهای عضویت + ثبت آهنگ‌های فوروارد‌شده به کانال آرشیو."""
+"""لاگ رویدادها + مدیریت کانال دیتابیس (آرشیو آهنگ).
+
+دو کار اصلی:
+  ۱) رویدادهای عضویت ربات را در کانال لاگ ثبت می‌کند.
+  ۲) کانال دیتابیس را مدیریت می‌کند:
+     · آهنگی که مالک **فوروارد** می‌کند، توسط ربات دانلود و **دوباره ارسال**
+       می‌شود با کپشن کامل و دکمه‌ی حذف؛ سپس پیام فوروارد اصلی پاک می‌شود
+       تا کانال تکراری نماند.
+     · دکمه‌ی حذف با تأیید دومرحله‌ای کار می‌کند (کلیک اشتباه آهنگ را پاک نکند)
+       و هم رکورد دیتابیس، هم پیام کانال را حذف می‌کند.
+
+الگوی callback: `arch|del|<key>` · `arch|yes|<key>` · `arch|no|<key>`
+"""
+from __future__ import annotations
+
+import asyncio
 import logging
+import os
 
 from pyrogram import Client, filters
-from pyrogram.types import ChatMemberUpdated, Message
+from pyrogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 import config
 from bot import channel
+from bot import channel_ui as cui
 from bot import database as db
+from bot.auth import OWNER_ID
 
 LOGGER = logging.getLogger("musicbot.events")
 
+# کلیدهایی که در حال پردازش‌اند (جلوگیری از پردازش دوباره‌ی پیام خودِ ربات)
+_processing: set = set()
 
-@Client.on_message(filters.audio & filters.channel)
-async def _on_archive_audio(client: Client, message: Message):
-    """هر آهنگ صوتی که در کانال آرشیو فوروارد/آپلود شود → ثبت در دیتابیس.
 
-    این‌طور آهنگ‌های فوروارد‌شده در جست‌وجو و پخش رندوم هم در دسترس می‌شوند.
+# ================================================================ کانال دیتابیس
+@Client.on_message(filters.channel & (filters.audio | filters.video))
+async def _on_archive_media(client: Client, message: Message):
+    """رسانه‌ی جدید در کانال دیتابیس.
+
+    دو حالت:
+      · **فوروارد مالک** → دانلود، ارسال مجدد با کپشن کامل + دکمه‌ی حذف،
+        و حذف پیام فوروارد اصلی.
+      · آپلود خودِ ربات → فقط ثبت (دوباره پردازش نمی‌شود).
     """
     try:
         if not config.ARCHIVE_CHANNEL:
             return
-        if message.chat and message.chat.id == config.ARCHIVE_CHANNEL:
-            await channel.store_forwarded(message)
+        if not (message.chat and message.chat.id == config.ARCHIVE_CHANNEL):
+            return
+        # پیامی که خودِ ربات فرستاده، کپشن کامل دارد و نباید بازپردازی شود
+        if message.id in _processing:
+            return
+        media = message.audio or message.video
+        if not media:
+            return
+        # اگر این پیام از قبل در دیتابیس ثبت شده، کار تمام است
+        if db.archive_by_message(message.id):
+            return
+
+        is_forward = bool(message.forward_date or message.forward_from
+                          or message.forward_from_chat)
+        if is_forward:
+            await _reprocess_forward(client, message)
+        else:
+            await channel.store_message(message, source="upload")
     except Exception as e:  # noqa: BLE001
-        LOGGER.debug("archive audio store: %s", e)
+        LOGGER.warning("archive media handler: %s", e)
 
 
-@Client.on_message(filters.channel & filters.reply & filters.regex(r"^\s*حذف\s*$"))
-async def _on_archive_delete(client: Client, message: Message):
-    """ریپلای «حذف» روی یک آهنگ در کانال آرشیو → حذف آن از دیتابیس."""
+async def _reprocess_forward(client: Client, message: Message) -> None:
+    """آهنگ فوروارد‌شده را دانلود، با اطلاعات کامل بازارسال و اصل را پاک می‌کند."""
+    media = message.audio or message.video
+    is_video = message.video is not None
+    title, performer = channel.media_title(media)
+
+    status = None
+    try:
+        text, ents = cui.forward_processing(title)
+        status = await client.send_message(config.ARCHIVE_CHANNEL, text,
+                                          entities=ents)
+    except Exception:  # noqa: BLE001
+        pass
+
+    path = ""
+    try:
+        os.makedirs(channel.DOWNLOAD_DIR, exist_ok=True)
+        path = await message.download(
+            file_name=os.path.join(channel.DOWNLOAD_DIR, f"fw_{message.id}"))
+        if not path or not os.path.isfile(path):
+            raise RuntimeError("download produced no file")
+
+        sent = await channel.publish_song(
+            client, path, title=title, performer=performer,
+            duration=int(getattr(media, "duration", 0) or 0),
+            file_size=int(getattr(media, "file_size", 0) or 0),
+            source="forward", added_by=OWNER_ID, is_video=is_video,
+        )
+        if sent:
+            _processing.add(sent.id)
+            # اصل فوروارد را پاک کن تا کانال تکراری نماند
+            try:
+                await message.delete()
+            except Exception as e:  # noqa: BLE001
+                LOGGER.debug("delete original forward: %s", e)
+    except Exception as e:  # noqa: BLE001
+        LOGGER.warning("reprocess forward failed: %s", e)
+        # اگر بازارسال نشد، دست‌کم همان فوروارد را ثبت کن تا از دست نرود
+        await channel.store_message(message, source="forward")
+    finally:
+        if status:
+            try:
+                await status.delete()
+            except Exception:  # noqa: BLE001
+                pass
+        if path and os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+@Client.on_callback_query(filters.regex(r"^arch\|"))
+async def _on_archive_cb(client: Client, cq: CallbackQuery):
+    """دکمه‌ی حذف زیر آهنگ‌های کانال دیتابیس (با تأیید دومرحله‌ای)."""
+    if not cq.from_user or cq.from_user.id != OWNER_ID:
+        await cq.answer("فقط مالک می‌تواند دیتابیس را تغییر دهد.",
+                        show_alert=True)
+        return
+    parts = str(cq.data or "").split("|")
+    action = parts[1] if len(parts) > 1 else ""
+    short = parts[2] if len(parts) > 2 else ""
+
+    rec = db.archive_by_message(cq.message.id) if cq.message else None
+    if not rec:
+        rec = db.archive_by_short(short)
+    if not rec:
+        await cq.answer("این آهنگ در دیتابیس نیست.", show_alert=True)
+        return
+
+    if action == "del":
+        try:
+            await cq.message.edit_reply_markup(cui.confirm_keyboard(rec["key"]))
+        except Exception:  # noqa: BLE001
+            pass
+        await cq.answer("برای حذف تأیید کن")
+        return
+
+    if action == "no":
+        try:
+            await cq.message.edit_reply_markup(cui.song_keyboard(rec["key"]))
+        except Exception:  # noqa: BLE001
+            pass
+        await cq.answer("انصراف داده شد")
+        return
+
+    if action == "yes":
+        db.archive_delete(key=rec["key"])
+        n = db.archive_count()
+        try:
+            await cq.message.delete()
+        except Exception as e:  # noqa: BLE001
+            LOGGER.debug("delete archive msg: %s", e)
+        await channel.log(*cui.song_deleted(rec.get("title", ""), n))
+        await cq.answer("از دیتابیس حذف شد")
+        return
+
+    await cq.answer()
+
+
+# --- سازگاری با روش قدیمی: ریپلای «حذف» روی آهنگ ---
+@Client.on_message(filters.channel & filters.reply
+                   & filters.regex(r"^\s*حذف\s*$"))
+async def _on_archive_delete_reply(client: Client, message: Message):
     try:
         if not config.ARCHIVE_CHANNEL:
             return
         if not (message.chat and message.chat.id == config.ARCHIVE_CHANNEL):
             return
         target = message.reply_to_message
-        if not target or not getattr(target, "audio", None):
+        if not target:
             return
         rec = await channel.delete_from_archive(target)
-        if rec:
-            await message.reply_text(f"🗑 «{rec.get('title')}» از دیتابیس حذف شد.")
-        else:
-            await message.reply_text("این آهنگ در دیتابیس نبود.")
+        try:
+            await message.delete()
+            if rec:
+                await target.delete()
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as e:  # noqa: BLE001
-        LOGGER.debug("archive delete: %s", e)
+        LOGGER.debug("archive delete reply: %s", e)
 
 
+# ================================================================ کانال لاگ
 @Client.on_chat_member_updated()
 async def _on_member_update(client: Client, ev: ChatMemberUpdated):
     """وقتی وضعیت خودِ ربات در یک گروه عوض شد، در کانال لاگ اعلام کن."""
@@ -53,7 +198,6 @@ async def _on_member_update(client: Client, ev: ChatMemberUpdated):
         me = client.me
         if me is None:
             me = await client.get_me()
-        # فقط رویدادهای مربوط به خودِ ربات
         who = ev.new_chat_member or ev.old_chat_member
         if not who or not who.user or who.user.id != me.id:
             return
@@ -62,28 +206,25 @@ async def _on_member_update(client: Client, ev: ChatMemberUpdated):
         title = getattr(chat, "title", "") or str(chat.id)
         adder = ev.from_user
         adder_name = ""
+        adder_id = 0
         if adder:
-            adder_name = adder.first_name or (adder.username and "@" + adder.username) or str(adder.id)
+            adder_name = (adder.first_name
+                          or (adder.username and "@" + adder.username)
+                          or str(adder.id))
+            adder_id = adder.id
 
         old_status = ev.old_chat_member.status.name if ev.old_chat_member else None
         new_status = ev.new_chat_member.status.name if ev.new_chat_member else None
 
-        added = (old_status in (None, "LEFT", "BANNED")) and new_status in ("MEMBER", "ADMINISTRATOR")
+        added = (old_status in (None, "LEFT", "BANNED")) and new_status in (
+            "MEMBER", "ADMINISTRATOR")
         removed = new_status in ("LEFT", "BANNED")
 
         if added:
             db.add_chat(chat.id)
-            await channel.log(
-                f"➕ **به گروه جدید اضافه شد**\n"
-                f"• گروه: {title}\n"
-                f"• آیدی: `{chat.id}`\n"
-                f"• توسط: {adder_name}"
-            )
+            await channel.log(*cui.group_added(title, chat.id, adder_name,
+                                              adder_id))
         elif removed:
-            await channel.log(
-                f"➖ **از گروه حذف/بلاک شد**\n"
-                f"• گروه: {title}\n"
-                f"• آیدی: `{chat.id}`"
-            )
+            await channel.log(*cui.group_removed(title, chat.id))
     except Exception as e:  # noqa: BLE001
         LOGGER.debug("member update log: %s", e)

@@ -202,6 +202,8 @@ async def order_decision_cb(client: Client, cq: CallbackQuery):
         await _edit_channel_msg(cq, cap, ents)
         await _notify_buyer_ok(client, buyer_id, group_name, months, status)
         await _notify_group(client, chat_id, group_name, status)
+        await _log_sub(True, group_name, chat_id, months,
+                      order.get("method", ""), status, oid)
         await cq.answer("تأیید شد و اشتراک فعال شد")
         return
 
@@ -211,10 +213,28 @@ async def order_decision_cb(client: Client, cq: CallbackQuery):
                                      False)
         await _edit_channel_msg(cq, cap, ents)
         await _notify_buyer_no(client, buyer_id, group_name, months, oid)
+        await _log_sub(False, group_name, chat_id, months,
+                      order.get("method", ""), "", oid)
         await cq.answer("سفارش لغو شد")
         return
 
     await cq.answer()
+
+
+async def _log_sub(approved: bool, group: str, chat_id: int, months: int,
+                   method: str, status: str, oid: str) -> None:
+    """ثبت رویداد اشتراک در کانال لاگ — قبلاً هیچ‌جا ثبت نمی‌شد."""
+    try:
+        from bot import channel
+        from bot import channel_ui as cui
+        label = sub.METHOD_LABEL.get(method, method)
+        if approved:
+            await channel.log(*cui.sub_activated(group, chat_id, months, label,
+                                                status))
+        else:
+            await channel.log(*cui.sub_rejected(group, chat_id, oid))
+    except Exception as e:  # noqa: BLE001
+        LOGGER.debug("log sub event: %s", e)
 
 
 async def _edit_channel_msg(cq: CallbackQuery, caption: str, ents) -> None:

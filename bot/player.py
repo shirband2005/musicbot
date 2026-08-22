@@ -266,6 +266,9 @@ async def _ensure_local_file(track: Track) -> bool:
                 asyncio.create_task(channel.archive_store(
                     path, vid, query, info.get("title", track.title),
                     int(info.get("duration") or 0), track.is_video,
+                    source=track.source or "youtube",
+                    url=track.webpage_url or "",
+                    added_by=track.requester_id or 0,
                 ))
             except Exception as e:  # noqa: BLE001
                 logs.debug("archive store schedule: %s", e)
@@ -312,6 +315,8 @@ async def _archive_soundcloud(track: Track) -> None:
                 path, "", track.query,
                 info.get("title", track.title),
                 int(info.get("duration") or 0), False,
+                source="soundcloud", url=track.webpage_url or "",
+                added_by=track.requester_id or 0,
             )
             # فایل موقتِ آرشیو را پاک کن (پخش از استریم است، این فایل لازم نیست)
             try:

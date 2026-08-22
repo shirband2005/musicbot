@@ -86,7 +86,12 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             title       TEXT,
             duration    INTEGER DEFAULT 0,
             is_video    INTEGER DEFAULT 0,
-            added_at    REAL DEFAULT 0
+            added_at    REAL DEFAULT 0,
+            performer   TEXT DEFAULT '',    -- خواننده
+            file_size   INTEGER DEFAULT 0,  -- بایت
+            source      TEXT DEFAULT '',    -- youtube | soundcloud | forward | telegram
+            added_by    INTEGER DEFAULT 0,  -- شناسه‌ی کسی که اضافه کرد
+            url         TEXT DEFAULT ''     -- لینک صفحه‌ی منبع
         );
         -- اشتراک هر گروه
         CREATE TABLE IF NOT EXISTS subscriptions (
@@ -147,6 +152,12 @@ _EXTRA_COLUMNS = [
     # مکث اشتراک: timestamp لحظه‌ی مکث (۰ = مکث نشده). با ادامه، expires_at
     # به اندازه‌ی مدت مکث جلو می‌رود تا روزی از کاربر سوخت نشود.
     ("subscriptions", "paused_at", "REAL DEFAULT 0"),
+    # اطلاعات کامل‌تر آهنگ آرشیو (برای نمایش در کانال دیتابیس)
+    ("channel_songs", "performer", "TEXT DEFAULT ''"),
+    ("channel_songs", "file_size", "INTEGER DEFAULT 0"),
+    ("channel_songs", "source", "TEXT DEFAULT ''"),
+    ("channel_songs", "added_by", "INTEGER DEFAULT 0"),
+    ("channel_songs", "url", "TEXT DEFAULT ''"),
 ]
 
 
@@ -257,12 +268,22 @@ def queue_clear(chat_id: int) -> None:
 
 
 # --- آرشیو آهنگ در کانال (دیتابیس بی‌نهایت) ---
+def _col(row, name, default):
+    """خواندن ستون با پیش‌فرض — دیتابیس‌های قدیمی ممکن است ستون را نداشته باشند."""
+    try:
+        v = row[name]
+    except (IndexError, KeyError):
+        return default
+    return default if v is None else v
+
+
 def archive_get(key: str) -> Optional[dict]:
     """اطلاعات آهنگ آرشیوشده در کانال را برمی‌گرداند (اگر باشد)."""
     with _lock:
         conn = _connect()
         row = conn.execute(
-            "SELECT key, file_id, message_id, title, duration, is_video "
+            "SELECT key, file_id, message_id, title, duration, is_video, "
+            "performer, file_size, source, added_by, url, added_at "
             "FROM channel_songs WHERE key=?",
             (key,),
         ).fetchone()
@@ -275,23 +296,88 @@ def archive_get(key: str) -> Optional[dict]:
             "title": row["title"],
             "duration": row["duration"],
             "is_video": bool(row["is_video"]),
+            "performer": _col(row, "performer", ""),
+            "file_size": _col(row, "file_size", 0),
+            "source": _col(row, "source", ""),
+            "added_by": _col(row, "added_by", 0),
+            "url": _col(row, "url", ""),
+            "added_at": _col(row, "added_at", 0.0),
         }
 
 
 def archive_put(key: str, file_id: str, message_id: int, title: str,
-                duration: int, is_video: bool) -> None:
+                duration: int, is_video: bool, performer: str = "",
+                file_size: int = 0, source: str = "", added_by: int = 0,
+                url: str = "") -> None:
+    """ثبت/به‌روزرسانی آهنگ آرشیو با اطلاعات کامل."""
     import time
     with _lock:
         conn = _connect()
         conn.execute(
-            "INSERT INTO channel_songs(key, file_id, message_id, title, duration, is_video, added_at) "
-            "VALUES (?,?,?,?,?,?,?) "
+            "INSERT INTO channel_songs(key, file_id, message_id, title, duration, "
+            "is_video, added_at, performer, file_size, source, added_by, url) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(key) DO UPDATE SET file_id=excluded.file_id, "
             "message_id=excluded.message_id, title=excluded.title, "
-            "duration=excluded.duration, is_video=excluded.is_video",
-            (key, file_id, message_id, title, duration, 1 if is_video else 0, time.time()),
+            "duration=excluded.duration, is_video=excluded.is_video, "
+            "performer=excluded.performer, file_size=excluded.file_size, "
+            "source=excluded.source, added_by=excluded.added_by, url=excluded.url",
+            (key, file_id, message_id, title, duration, 1 if is_video else 0,
+             time.time(), performer, int(file_size or 0), source,
+             int(added_by or 0), url),
         )
         conn.commit()
+
+
+def archive_by_message(message_id: int) -> Optional[dict]:
+    """رکورد آهنگ بر اساس شناسه‌ی پیام کانال دیتابیس."""
+    if not message_id:
+        return None
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT key, file_id, message_id, title, duration, is_video, "
+            "performer, file_size, source, added_by, url, added_at "
+            "FROM channel_songs WHERE message_id=?",
+            (int(message_id),),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "key": row["key"],
+            "file_id": row["file_id"],
+            "message_id": row["message_id"],
+            "title": row["title"],
+            "duration": row["duration"],
+            "is_video": bool(row["is_video"]),
+            "performer": _col(row, "performer", ""),
+            "file_size": _col(row, "file_size", 0),
+            "source": _col(row, "source", ""),
+            "added_by": _col(row, "added_by", 0),
+            "url": _col(row, "url", ""),
+            "added_at": _col(row, "added_at", 0.0),
+        }
+
+
+def archive_by_short(short: str) -> Optional[dict]:
+    """رکورد آهنگ از کلید کوتاه‌شده‌ی callback_data.
+
+    اگر کلید کوتاه بود، همان کلید است؛ اگر با 'h:' شروع شود، هش کلید است و
+    باید بین رکوردها پیدا شود (تعداد آهنگ‌ها زیاد است ولی این مسیر نادر است).
+    """
+    if not short:
+        return None
+    if not short.startswith("h:"):
+        return archive_get(short)
+    import hashlib
+    target = short[2:]
+    with _lock:
+        conn = _connect()
+        rows = conn.execute("SELECT key FROM channel_songs").fetchall()
+    for r in rows:
+        if hashlib.sha1(r["key"].encode()).hexdigest()[:16] == target:
+            return archive_get(r["key"])
+    return None
 
 
 def archive_count() -> int:
@@ -306,12 +392,14 @@ def archive_delete(key: str = "", message_id: int = 0) -> Optional[dict]:
         conn = _connect()
         if message_id:
             row = conn.execute(
-                "SELECT key, title, message_id FROM channel_songs WHERE message_id=?",
+                "SELECT key, title, message_id, performer, duration, source "
+                "FROM channel_songs WHERE message_id=?",
                 (message_id,),
             ).fetchone()
         elif key:
             row = conn.execute(
-                "SELECT key, title, message_id FROM channel_songs WHERE key=?",
+                "SELECT key, title, message_id, performer, duration, source "
+                "FROM channel_songs WHERE key=?",
                 (key,),
             ).fetchone()
         else:
@@ -320,14 +408,19 @@ def archive_delete(key: str = "", message_id: int = 0) -> Optional[dict]:
             return None
         conn.execute("DELETE FROM channel_songs WHERE key=?", (row["key"],))
         conn.commit()
-        return {"key": row["key"], "title": row["title"], "message_id": row["message_id"]}
+        return {"key": row["key"], "title": row["title"],
+                "message_id": row["message_id"],
+                "performer": _col(row, "performer", ""),
+                "duration": _col(row, "duration", 0),
+                "source": _col(row, "source", "")}
 
 
 def archive_random(audio_only: bool = True) -> Optional[dict]:
     """یک آهنگ تصادفی از آرشیو کانال برمی‌گرداند (برای حالت پخش رندوم)."""
     with _lock:
         conn = _connect()
-        sql = ("SELECT key, file_id, message_id, title, duration, is_video "
+        sql = ("SELECT key, file_id, message_id, title, duration, is_video, "
+               "performer, file_size, source, added_by, url, added_at "
                "FROM channel_songs")
         if audio_only:
             sql += " WHERE is_video=0"
@@ -342,6 +435,12 @@ def archive_random(audio_only: bool = True) -> Optional[dict]:
             "title": row["title"],
             "duration": row["duration"],
             "is_video": bool(row["is_video"]),
+            "performer": _col(row, "performer", ""),
+            "file_size": _col(row, "file_size", 0),
+            "source": _col(row, "source", ""),
+            "added_by": _col(row, "added_by", 0),
+            "url": _col(row, "url", ""),
+            "added_at": _col(row, "added_at", 0.0),
         }
 
 
