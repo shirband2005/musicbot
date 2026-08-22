@@ -264,14 +264,6 @@ async def _play_telegram_file(client: Client, message: Message) -> bool:
 
     # --- مسیر استریم مستقیم برای فایل حجیم (بدون دانلود) ---
     if size >= _TG_STREAM_THRESHOLD:
-        # استریم ویدیو/فیلم حجیم فقط برای اشتراک حرفه‌ای (pro)
-        from bot import subscription as sub
-        if is_video and not sub.is_pro(message.chat.id):
-            await message.reply_text(
-                "🎬 استریم فیلم حجیم فقط با اشتراک **حرفه‌ای** فعال است.\n"
-                "برای ارتقا، در خصوصی ربات «🛒 خرید اشتراک» را بزن."
-            )
-            return True
         status = await message.reply_text(
             f"📡 فایل حجیم ({size // (1024*1024)} مگ) — استریم مستقیم...\n"
             "بدون دانلود، همه با اینترنت سرور."

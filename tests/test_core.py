@@ -305,20 +305,16 @@ def test_history_capped(fresh_db):
 
 
 def test_subscription_activate_and_expire(fresh_db):
-    """فعال‌سازی، تیر، انقضا و تمدید اشتراک."""
+    """فعال‌سازی، انقضا و تمدید اشتراک (طرح واحد، بدون تیر)."""
     from bot import subscription as sub
     cid = -100555
     assert sub.is_active(cid) is False
-    # فعال‌سازی ۱ ماهه پایه
-    exp = sub.activate(cid, sub.TIER_BASIC, 1, buyer_id=42)
+    exp = sub.activate(cid, 1, buyer_id=42)
     assert exp > 0 and sub.is_active(cid) is True
-    assert sub.get_tier(cid) == sub.TIER_BASIC
-    assert sub.is_pro(cid) is False
-    # ارتقا به دائمی حرفه‌ای
-    exp2 = sub.activate(cid, sub.TIER_PRO, 0, buyer_id=42)
-    assert exp2 == 0 and sub.is_pro(cid) is True
-    # لغو
-    sub.deactivate(cid)
+    # تمدید از انتهای اشتراک فعال اضافه می‌شود، نه از امروز
+    exp2 = sub.activate(cid, 2, buyer_id=42)
+    assert exp2 > exp
+    sub.cancel(cid)
     assert sub.is_active(cid) is False
 
 
@@ -326,11 +322,9 @@ def test_pay_settings_and_prices(fresh_db):
     """قیمت‌ها و تنظیمات پرداخت قابل ذخیره/بازیابی‌اند."""
     from bot import subscription as sub
     from bot import database as db
-    # پیش‌فرض
-    assert sub.get_price(sub.TIER_PRO, 1, "stars") > 0
-    # override
-    sub.set_price(sub.TIER_PRO, 1, "stars", 999)
-    assert sub.get_price(sub.TIER_PRO, 1, "stars") == 999
+    assert sub.get_price(sub.METHOD_STARS, 1) > 0
+    sub.set_price(sub.METHOD_STARS, 1, 999)
+    assert sub.get_price(sub.METHOD_STARS, 1) == 999
     db.pay_set("card_number", "6037-xxxx")
     assert db.pay_get("card_number") == "6037-xxxx"
 
@@ -354,27 +348,6 @@ def test_txid_reuse_guard(fresh_db):
     db.order_set_status("o1", "paid", ref="TX_ABC")
     paid = db.orders_all_paid()
     assert any(o["ref"] == "TX_ABC" for o in paid)
-
-
-def test_usdt_conversion():
-    """تبدیل تومان به USDT با نرخ."""
-    from bot import crypto_verify as cv
-    from decimal import Decimal
-    assert cv.toman_to_usdt(100000, 100000) == Decimal("1.00")
-    assert cv.toman_to_usdt(250000, 100000) == Decimal("2.50")
-    assert cv.toman_to_usdt(100000, 0) == Decimal("0")
-
-
-def test_gift_codes(fresh_db):
-    """ساخت، اعتبارسنجی، مصرف و اتمام ظرفیت کد هدیه."""
-    from bot import database as db
-    db.gift_create("NOWRUZ", "pro", 1, max_uses=2)
-    g = db.gift_get("NOWRUZ")
-    assert g and g["tier"] == "pro" and g["max_uses"] == 2
-    assert db.gift_redeem("NOWRUZ") is True   # استفاده ۱
-    assert db.gift_redeem("NOWRUZ") is True   # استفاده ۲
-    assert db.gift_redeem("NOWRUZ") is False  # ظرفیت تمام
-    assert db.gift_redeem("UNKNOWN") is False  # کد ناموجود
 
 
 # ---------------- migration از settings قدیمی ----------------
