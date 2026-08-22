@@ -3,6 +3,7 @@
 صف و آهنگ در حال پخش هر گروه در دیتابیس هم ذخیره می‌شود تا با ری‌استارت از بین نرود.
 """
 import time
+import uuid
 from collections import deque
 from dataclasses import asdict, dataclass, fields
 from typing import Deque, Dict, List, Optional
@@ -19,6 +20,8 @@ class Track:
     duration_text: str
     thumbnail: Optional[str]
     requester: str  # نام درخواست‌کننده
+    requester_id: int = 0  # شناسه‌ی عددی درخواست‌کننده (برای منشن قابل کلیک در پنل)
+    uid: str = ""  # شناسه‌ی یکتای این آیتم صف (برای callback پرش/حذف در لیست پخش)
     is_video: bool = False
     query: str = ""  # عبارت جست‌وجوی اصلی (برای دریافت رسانه/بازپخش)
     video_id: str = ""  # شناسه ویدیوی یوتیوب (کلید کش)
@@ -55,6 +58,13 @@ class Track:
         if self.duration:
             pos = min(pos, self.duration)
         return int(pos)
+
+    def __post_init__(self) -> None:
+        # هر Track شناسه‌ی یکتا می‌گیرد تا callback لیست پخش به شماره‌ی ردیف
+        # وابسته نباشد؛ شماره‌ها با رد شدن/حذف آهنگ جابه‌جا می‌شوند و کاربر
+        # ممکن است آیتم اشتباهی را پخش/حذف کند.
+        if not self.uid:
+            self.uid = uuid.uuid4().hex[:8]
 
 
 _TRACK_FIELDS = {f.name for f in fields(Track)}

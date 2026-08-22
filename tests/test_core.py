@@ -48,7 +48,8 @@ def test_special_users_crud(fresh_db):
 def test_group_settings_defaults_and_update(fresh_db):
     db = fresh_db
     d = db.group_get(-100)
-    assert d == {"enabled": 0, "lock": "none", "platform": "both", "mode": "queue"}
+    assert d == {"enabled": 0, "lock": "none", "platform": "both",
+                 "mode": "queue", "free_until": 0.0}
     db.group_set(-100, enabled=1)
     assert db.group_get(-100)["enabled"] == 1
     db.group_set(-100, lock="youtube", platform="youtube")
