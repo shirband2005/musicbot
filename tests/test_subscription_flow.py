@@ -389,20 +389,48 @@ def test_order_keyboard_has_approve_and_reject():
     assert cbs(kb) == ["ord|ok|oid1", "ord|no|oid1"]
 
 
+def test_all_back_buttons_are_blue(fresh_db):
+    """تصمیم کاربر: همه‌ی دکمه‌های بازگشت در بخش اشتراک آبی باشند."""
+    from bot import subscription as sub
+    from bot import ui
+    from bot.plugins import buy, mysub
+
+    fresh_db.card_add("6037997712345678", "x")
+    sub.activate(-100111, 1)
+    pages = [
+        buy.page_no_group("https://t.me/b?startgroup=true"),
+        buy.page_methods("گروه", -100111),
+        buy.page_plans("گروه", sub.METHOD_CARD),
+        buy.page_invoice_card("گروه", 1, "oid", fresh_db.cards_all()),
+        buy.page_invoice_crypto("گروه", 1, "oid"),
+        buy.page_invoice_stars("گروه", 1, "https://t.me/i"),
+        mysub.page_detail(-100111, "گروه"),
+    ]
+    found = 0
+    for _t, _e, kb in pages:
+        for row in kb.inline_keyboard:
+            for b in row:
+                if b.text == "بازگشت":
+                    found += 1
+                    assert str(b.style) == str(ui.BLUE), b.callback_data
+    assert found >= 6
+
+
 def test_decision_caption_records_reviewer(fresh_db):
     from bot.plugins import payments
 
     fresh_db.order_create("oid3", 555, -100111, "single", 1, 120000, "card")
     order = fresh_db.order_get("oid3")
     text, _e = payments.decision_caption(order, "گروه", "AB°L", 555, True,
-                                         "مالک", 999, "۳۰ روز مانده")
+                                         "۳۰ روز مانده")
     assert "تأیید شد" in text
-    assert "بررسی‌کننده" in text
     assert "۳۰ روز مانده" in text
+    # نام بررسی‌کننده نباید نمایش داده شود (تصمیم کاربر)
+    assert "بررسی‌کننده" not in text
 
-    text, _e = payments.decision_caption(order, "گروه", "AB°L", 555, False,
-                                         "مالک", 999)
+    text, _e = payments.decision_caption(order, "گروه", "AB°L", 555, False)
     assert "لغو شد" in text
+    assert "بررسی‌کننده" not in text
     assert "به خریدار اطلاع داده شد" in text
 
 

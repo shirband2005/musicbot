@@ -80,7 +80,7 @@ def page_detail(chat_id: int, name: str):
     if sub.days_left(chat_id) != -1:
         rows.append([ui.btn("تمدید اشتراک", f"my|renew|{chat_id}", ui.GREEN,
                             ui.EMO_DOWNLOAD)])
-    rows.append([ui.btn("بازگشت", "my|list", ui.PLAIN, ui.EMO_BACK)])
+    rows.append([ui.btn("بازگشت", "my|list", ui.BLUE, ui.EMO_BACK)])
     return t.text, t.entities, ui.kb(rows)
 
 

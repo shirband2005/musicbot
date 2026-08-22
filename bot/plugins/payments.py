@@ -79,13 +79,15 @@ def stars_notice(order: dict, group_name: str, buyer_name: str, buyer_id: int):
 
 
 def decision_caption(order: dict, group_name: str, buyer_name: str, buyer_id: int,
-                     approved: bool, reviewer: str, reviewer_id: int,
-                     status_text: str = ""):
-    """کپشن پس از تصمیم مالک (همان پیام ویرایش می‌شود)."""
+                     approved: bool, status_text: str = ""):
+    """کپشن پس از تصمیم مالک (همان پیام ویرایش می‌شود).
+
+    نام بررسی‌کننده عمداً نمایش داده نمی‌شود (تصمیم کاربر) — دکمه‌ها حذف
+    می‌شوند و همین نشان می‌دهد سفارش بررسی شده است.
+    """
     t = ui.Text().title(ui.EMO_PLAY if approved else ui.EMO_STOP,
                         ui.BASE_ARROW, "تأیید شد" if approved else "لغو شد")
     _order_body(t, order, group_name, buyer_name, buyer_id)
-    t.field(6, "بررسی‌کننده", mention=(reviewer, reviewer_id))
     t.add("\n")
     if approved:
         t.italic(f"اشتراک فعال شد — {status_text}")
@@ -190,14 +192,13 @@ async def order_decision_cb(client: Client, cq: CallbackQuery):
     months = int(order.get("months") or 0)
     group_name = await buy.chat_title(client, chat_id)
     buyer_name = await _user_name(client, buyer_id)
-    reviewer = cq.from_user.first_name or "مالک"
 
     if action == "ok":
         db.order_set_status(oid, "paid", f"تأیید مالک {cq.from_user.id}")
         sub.activate(chat_id, months, buyer_id=buyer_id)
         status = sub.status_text(chat_id)
         cap, ents = decision_caption(order, group_name, buyer_name, buyer_id,
-                                     True, reviewer, cq.from_user.id, status)
+                                     True, status)
         await _edit_channel_msg(cq, cap, ents)
         await _notify_buyer_ok(client, buyer_id, group_name, months, status)
         await _notify_group(client, chat_id, group_name, status)
@@ -207,7 +208,7 @@ async def order_decision_cb(client: Client, cq: CallbackQuery):
     if action == "no":
         db.order_set_status(oid, "rejected", f"لغو مالک {cq.from_user.id}")
         cap, ents = decision_caption(order, group_name, buyer_name, buyer_id,
-                                     False, reviewer, cq.from_user.id)
+                                     False)
         await _edit_channel_msg(cq, cap, ents)
         await _notify_buyer_no(client, buyer_id, group_name, months, oid)
         await cq.answer("سفارش لغو شد")

@@ -90,7 +90,7 @@ def page_no_group(add_url: str):
     rows = []
     if add_url:
         rows.append([ui.btn("افزودن به گروه", None, ui.GREEN, None, url=add_url)])
-    rows.append([ui.btn("بازگشت", "buy|back", ui.PLAIN, ui.EMO_BACK)])
+    rows.append([ui.btn("بازگشت", "buy|back", ui.BLUE, ui.EMO_BACK)])
     return t.text, t.entities, ui.kb(rows)
 
 
@@ -122,7 +122,7 @@ def page_methods(group_name: str, chat_id: int, renew: bool = False):
     if not rows:
         t.add("\n")
         t.italic("فعلاً هیچ روش پرداختی فعال نیست. با پشتیبانی تماس بگیر.")
-    rows.append([ui.btn("بازگشت", "buy|start", ui.PLAIN, ui.EMO_BACK)])
+    rows.append([ui.btn("بازگشت", "buy|start", ui.BLUE, ui.EMO_BACK)])
     return t.text, t.entities, ui.kb(rows)
 
 
@@ -137,7 +137,7 @@ def page_plans(group_name: str, method: str):
                     f"{ui.fa(sub.price_text(method, m))}",
                     f"buy|plan|{method}|{m}")]
             for m in sub.DURATIONS]
-    rows.append([ui.btn("بازگشت", "buy|m_back", ui.PLAIN, ui.EMO_BACK)])
+    rows.append([ui.btn("بازگشت", "buy|m_back", ui.BLUE, ui.EMO_BACK)])
     return t.text, t.entities, ui.kb(rows)
 
 
@@ -176,7 +176,7 @@ def page_invoice_card(group_name: str, months: int, oid: str, cards: list):
         rows.append([ui.btn("پرداخت کردم — ارسال فیش", f"buy|paid|{oid}",
                             ui.GREEN)])
     rows.append([ui.btn("انصراف", f"buy|cancel|{oid}", ui.RED),
-                 ui.btn("بازگشت", "buy|m_back", ui.PLAIN, ui.EMO_BACK)])
+                 ui.btn("بازگشت", "buy|m_back", ui.BLUE, ui.EMO_BACK)])
     return t.text, t.entities, ui.kb(rows)
 
 
@@ -206,7 +206,7 @@ def page_invoice_crypto(group_name: str, months: int, oid: str):
         rows.append([ui.btn("پرداخت کردم — ارسال فیش", f"buy|paid|{oid}",
                             ui.GREEN)])
     rows.append([ui.btn("انصراف", f"buy|cancel|{oid}", ui.RED),
-                 ui.btn("بازگشت", "buy|m_back", ui.PLAIN, ui.EMO_BACK)])
+                 ui.btn("بازگشت", "buy|m_back", ui.BLUE, ui.EMO_BACK)])
     return t.text, t.entities, ui.kb(rows)
 
 
@@ -223,7 +223,7 @@ def page_invoice_stars(group_name: str, months: int, link: str):
     if link:
         rows.append([ui.btn(f"پرداخت {ui.fa(stars)} استارز", None, ui.GREEN,
                             None, url=link)])
-    rows.append([ui.btn("بازگشت", "buy|m_back", ui.PLAIN, ui.EMO_BACK)])
+    rows.append([ui.btn("بازگشت", "buy|m_back", ui.BLUE, ui.EMO_BACK)])
     return t.text, t.entities, ui.kb(rows)
 
 
